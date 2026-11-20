@@ -1,70 +1,70 @@
 # toolz
 
-Collection d'utilitaires personnels pour Linux.
+A collection of personal Linux utilities.
 
 ## `ag-setup.sh`
 
-Script d'**installation et de mise à jour automatique** pour **Google Antigravity (Hub / 2.0)** sur Linux.
+An **automatic installation and update script** for **Google Antigravity (Hub / 2.0)** on Linux.
 
-Il permet aussi bien d'**installer Google Antigravity depuis zéro** sur un système fraîchement installé (Ubuntu, Linux Mint, etc.) que de le **mettre à jour** automatiquement par la suite.
+It can both **install Google Antigravity from scratch** on a fresh system (Ubuntu, Linux Mint, etc.) and automatically **update** it afterward.
 
-### Fonctionnement
+### How it works
 
-1. Vérifie la dernière version disponible sur [antigravity.google/download](https://antigravity.google/download).
-2. Compare avec la version éventuellement installée localement (lue depuis `resources/app.asar`).
-3. Télécharge l'archive Linux adaptée à l'architecture (`linux-x64` ou `linux-arm`) via `curl` ou `wget` si Antigravity n'est pas installé ou si une nouvelle version existe.
-4. Extrait l'archive dans un répertoire temporaire et vérifie la présence du binaire `antigravity` avant de toucher à l'installation existante.
-5. Demande confirmation avant de fermer proprement les processus Antigravity liés au répertoire d'installation s'il est en cours d'exécution (sauf avec `--yes`).
-6. Installe ou remplace l'application de manière atomique (avec restauration automatique en cas d'erreur).
-7. Configure l'intégration bureau :
-   - extraction de l'icône officielle PNG (`512x512`) vers `~/.local/share/icons/hicolor/512x512/apps/antigravity.png` ;
-   - création du lanceur `~/.local/share/applications/antigravity.desktop` (avec support du schéma d'URL `antigravity://`) ;
-   - création du lien symbolique `~/.local/bin/antigravity` pour pouvoir lancer `antigravity` depuis le terminal.
-8. Supprime l'archive téléchargée et les fichiers temporaires.
+1. Checks the latest available version at [antigravity.google/download](https://antigravity.google/download).
+2. Compares it with the locally installed version, if any (read from `resources/app.asar`).
+3. Downloads the Linux archive matching the system architecture (`linux-x64` or `linux-arm`) using `curl` or `wget` if Antigravity is not installed or a newer version is available.
+4. Extracts the archive into a temporary staging directory and verifies that the `antigravity` binary is present before touching any existing installation.
+5. Prompts for confirmation before gracefully closing Antigravity processes tied to the installation directory if it is currently running (unless `--yes` is passed).
+6. Installs or replaces the application atomically (with automatic rollback on error).
+7. Sets up desktop integration:
+   - extracts the official PNG icon (`512x512`) to `~/.local/share/icons/hicolor/512x512/apps/antigravity.png`;
+   - creates the `~/.local/share/applications/antigravity.desktop` launcher (with `antigravity://` URL scheme support);
+   - creates the `~/.local/bin/antigravity` symlink so you can launch `antigravity` from the terminal.
+8. Removes the downloaded archive and temporary files.
 
-### Prérequis
+### Requirements
 
-- Linux (`x86_64` ou `arm64`)
+- Linux (`x86_64` or `arm64`)
 - `bash`
 - `tar`
-- `python3` (bibliothèque standard uniquement, installé par défaut sur Ubuntu / Linux Mint)
-- `curl` **ou** `wget` (fallback automatique sur `wget`, déjà présent sur un Ubuntu fraîchement installé)
+- `python3` (standard library only, installed by default on Ubuntu / Linux Mint)
+- `curl` **or** `wget` (automatic fallback to `wget`, preinstalled on a fresh Ubuntu system)
 
-### Utilisation
+### Usage
 
 ```bash
-# Installer ou mettre à jour automatiquement vers la dernière version
+# Automatically install or update to the latest version
 ./ag-setup.sh
 
-# Vérifier uniquement si une mise à jour est disponible (lecture seule, sans rien télécharger)
+# Only check if an update is available (read-only, downloads nothing)
 ./ag-setup.sh --check
 
-# Forcer le téléchargement et la réinstallation
+# Force download and reinstallation
 ./ag-setup.sh --force
 
-# Installer ou mettre à jour sans demander confirmation pour fermer Antigravity
+# Install or update without asking for confirmation to close Antigravity
 ./ag-setup.sh --yes
 
-# Installer ou mettre à jour sans créer le raccourci bureau, l'icône ni le lien CLI
+# Install or update without creating the desktop launcher, icon, or CLI symlink
 ./ag-setup.sh --no-desktop
 
-# Installer (ou mettre à jour) une copie du script dans ~/.local/bin/ag-setup
+# Install (or update) a copy of the script to ~/.local/bin/ag-setup
 ./ag-setup.sh --install-self
 
-# Installer depuis une archive .tar.gz locale (puis la supprimer)
-./ag-setup.sh /chemin/vers/Antigravity.tar.gz
+# Install from a local .tar.gz archive (and remove it afterward)
+./ag-setup.sh /path/to/Antigravity.tar.gz
 
-# Afficher l'aide
+# Show help
 ./ag-setup.sh --help
 ```
 
-### Variables d'environnement optionnelles
+### Optional environment variables
 
-- `XDG_DATA_HOME` : répertoire de données utilisateur (défaut : `$HOME/.local/share`).
-- `DEST_DIR` : répertoire d'installation d'Antigravity (défaut : `$XDG_DATA_HOME/antigravity`).
-- `BIN_DIR` : dossier de destination pour le lien symbolique `antigravity` et pour la copie installée via `--install-self` (défaut : `$HOME/.local/bin`).
-- `DESKTOP_DIR` : dossier du lanceur `.desktop` (défaut : `$XDG_DATA_HOME/applications`).
-- `ICON_DIR` : dossier de l'icône PNG (défaut : `$XDG_DATA_HOME/icons/hicolor/512x512/apps`).
-- `DOWNLOADER` : outil HTTP à utiliser : `auto`, `curl` ou `wget` (défaut : `auto`).
+- `XDG_DATA_HOME`: user data directory (default: `$HOME/.local/share`).
+- `DEST_DIR`: Antigravity installation directory (default: `$XDG_DATA_HOME/antigravity`).
+- `BIN_DIR`: destination directory for the `antigravity` symlink and the copy installed via `--install-self` (default: `$HOME/.local/bin`).
+- `DESKTOP_DIR`: directory for the `.desktop` launcher (default: `$XDG_DATA_HOME/applications`).
+- `ICON_DIR`: directory for the PNG icon (default: `$XDG_DATA_HOME/icons/hicolor/512x512/apps`).
+- `DOWNLOADER`: HTTP download tool to use: `auto`, `curl`, or `wget` (default: `auto`).
 
-> **Note :** Lors d'une mise à jour, lance de préférence le script depuis un terminal externe plutôt que depuis le terminal intégré d'Antigravity, car le script ferme les processus d'Antigravity liés à `DEST_DIR` au moment de remplacer les fichiers.
+> **Note:** When updating, prefer running the script from an external terminal rather than Antigravity's integrated terminal, as the script closes Antigravity processes associated with `DEST_DIR` when replacing files.
