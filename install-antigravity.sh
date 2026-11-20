@@ -43,17 +43,18 @@ Sans argument :
   l'installe (avec raccourci bureau et icône), puis supprime l'archive téléchargée.
 
 Options :
-  -c, --check       Vérifie uniquement si une mise à jour est disponible (lecture seule)
-  -f, --force       Force le téléchargement et la réinstallation même si déjà à jour
-      --no-desktop  Ne crée ni le lanceur .desktop, ni l'icône, ni le lien dans BIN_DIR
-  -h, --help        Affiche cette aide et quitte
+  -c, --check         Vérifie uniquement si une mise à jour est disponible (lecture seule)
+  -f, --force         Force le téléchargement et la réinstallation même si déjà à jour
+      --no-desktop    Ne crée ni le lanceur .desktop, ni l'icône, ni le lien dans BIN_DIR
+      --install-self  Copie ce script dans "$BIN_DIR/install-antigravity" pour l'utiliser de partout
+  -h, --help          Affiche cette aide et quitte
 
 Compatibilité :
   <chemin_vers_archive.tar.gz>  Installe l'archive locale fournie puis la supprime
 
 Variables d'environnement optionnelles :
   DEST_DIR     Dossier d'installation (défaut : $XDG_DATA_HOME/antigravity)
-  BIN_DIR      Dossier du lien symbolique CLI (défaut : $HOME/.local/bin)
+  BIN_DIR      Dossier de destination pour 'antigravity' et --install-self (défaut : $HOME/.local/bin)
   DESKTOP_DIR  Dossier du fichier .desktop (défaut : $XDG_DATA_HOME/applications)
   ICON_DIR     Dossier de l'icône PNG (défaut : $XDG_DATA_HOME/icons/hicolor/512x512/apps)
   DOWNLOADER   Outil de téléchargement : auto, curl ou wget (défaut : auto)
@@ -324,10 +325,15 @@ EOF
         update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
     fi
 
+    warn_if_not_in_path "antigravity"
+}
+
+warn_if_not_in_path() {
+    local cmd_name="$1"
     case ":$PATH:" in
         *":$BIN_DIR:"*) ;;
         *)
-            echo "Info : ajoute '$BIN_DIR' à ton PATH si la commande 'antigravity' n'est pas reconnue."
+            echo "Info : ajoute '$BIN_DIR' à ton PATH si la commande '$cmd_name' n'est pas reconnue."
             ;;
     esac
 }
@@ -618,10 +624,43 @@ print_completion_message() {
     fi
 }
 
+install_self() {
+    local src_raw="${BASH_SOURCE[0]:-}"
+    if [ -z "$src_raw" ] || [ ! -f "$src_raw" ]; then
+        echo "Erreur : impossible de localiser le fichier du script source (exécute le script depuis un fichier local)." >&2
+        exit 1
+    fi
+
+    local src_real target target_real tmp_target
+    src_real="$(readlink -f "$src_raw")"
+    target="$BIN_DIR/install-antigravity"
+
+    mkdir -p "$BIN_DIR"
+
+    if [ -e "$target" ] && [ ! -L "$target" ]; then
+        target_real="$(readlink -f "$target" 2>/dev/null || true)"
+        if [ -n "$target_real" ] && [ "$src_real" = "$target_real" ]; then
+            echo "Le script est déjà exécuté depuis '$target' (aucune copie nécessaire)."
+            return 0
+        fi
+    fi
+
+    tmp_target="$(mktemp "$BIN_DIR/.install-antigravity.XXXXXX")"
+    if ! cp "$src_real" "$tmp_target" || ! chmod 755 "$tmp_target" || ! mv -f "$tmp_target" "$target"; then
+        rm -f "$tmp_target"
+        echo "Erreur : impossible d'installer le script dans '$target'." >&2
+        exit 1
+    fi
+
+    echo "Script installé avec succès dans '$target'."
+    warn_if_not_in_path "install-antigravity"
+}
+
 main() {
     local check_only=0
     local force_install=0
     local setup_desktop=1
+    local install_self_mode=0
     local local_archive=""
 
     while [ "$#" -gt 0 ]; do
@@ -634,6 +673,9 @@ main() {
                 ;;
             --no-desktop)
                 setup_desktop=0
+                ;;
+            --install-self)
+                install_self_mode=1
                 ;;
             -h|--help)
                 usage
@@ -655,6 +697,15 @@ main() {
         esac
         shift
     done
+
+    if [ "$install_self_mode" -eq 1 ]; then
+        if [ "$check_only" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$setup_desktop" -eq 0 ] || [ -n "$local_archive" ]; then
+            echo "Erreur : l'option --install-self doit être utilisée seule." >&2
+            exit 1
+        fi
+        install_self
+        exit 0
+    fi
 
     if [ -n "$local_archive" ] && [ "$check_only" -eq 1 ]; then
         echo "Erreur : l'option --check est incompatible avec une archive locale." >&2

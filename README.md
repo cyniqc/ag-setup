@@ -45,6 +45,9 @@ Il permet aussi bien d'**installer Google Antigravity depuis zéro** sur un syst
 # Installer ou mettre à jour sans créer le raccourci bureau, l'icône ni le lien CLI
 ./install-antigravity.sh --no-desktop
 
+# Installer (ou mettre à jour) une copie du script dans ~/.local/bin/install-antigravity
+./install-antigravity.sh --install-self
+
 # Installer depuis une archive .tar.gz locale (puis la supprimer)
 ./install-antigravity.sh /chemin/vers/Antigravity.tar.gz
 
@@ -56,7 +59,7 @@ Il permet aussi bien d'**installer Google Antigravity depuis zéro** sur un syst
 
 - `XDG_DATA_HOME` : répertoire de données utilisateur (défaut : `$HOME/.local/share`).
 - `DEST_DIR` : répertoire d'installation d'Antigravity (défaut : `$XDG_DATA_HOME/antigravity`).
-- `BIN_DIR` : dossier du lien symbolique CLI `antigravity` (défaut : `$HOME/.local/bin`).
+- `BIN_DIR` : dossier de destination pour le lien symbolique `antigravity` et pour la copie installée via `--install-self` (défaut : `$HOME/.local/bin`).
 - `DESKTOP_DIR` : dossier du lanceur `.desktop` (défaut : `$XDG_DATA_HOME/applications`).
 - `ICON_DIR` : dossier de l'icône PNG (défaut : `$XDG_DATA_HOME/icons/hicolor/512x512/apps`).
 - `DOWNLOADER` : outil HTTP à utiliser : `auto`, `curl` ou `wget` (défaut : `auto`).
