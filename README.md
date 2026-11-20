@@ -72,6 +72,9 @@ ag-setup --no-desktop
 # Copy this script to ~/.local/bin/ag-setup so it can be run from anywhere
 ./ag-setup.sh --install-self
 
+# Show version
+ag-setup --version
+
 # Show help
 ag-setup --help
 ```
@@ -109,6 +112,10 @@ This is an **unofficial community tool** and is not affiliated with, endorsed by
 
 - It does not redistribute Google binaries; archives are downloaded directly from Google's official distribution endpoints and remain subject to Google's terms.
 - Version detection relies on Google's official release feed and download page structure, which may change without notice.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
 
 ## License
 

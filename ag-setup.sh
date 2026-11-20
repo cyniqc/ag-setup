@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+VERSION="0.9.0"
 DOWNLOAD_PAGE_URL="https://antigravity.google/download"
 HUB_RELEASES_API_URL="https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases"
 HUB_DOWNLOAD_BASE_URL="https://storage.googleapis.com/antigravity-public/antigravity-hub"
@@ -75,6 +76,7 @@ Options:
   -y, --yes           Close Antigravity automatically without asking for confirmation
       --no-desktop    Do not create the .desktop launcher, icon, or BIN_DIR symlink
       --install-self  Copy this script to "$BIN_DIR/ag-setup" so it can be run from anywhere
+      --version       Show version information and exit
   -h, --help          Show this help message and exit
 
 Optional environment variables:
@@ -1188,6 +1190,10 @@ main() {
                 ;;
             --install-self)
                 install_self_mode=1
+                ;;
+            --version)
+                printf 'ag-setup %s\n' "$VERSION"
+                exit 0
                 ;;
             -h|--help)
                 usage
