@@ -901,7 +901,7 @@ close_antigravity() {
     kill -TERM "${pids[@]}" 2>/dev/null || true
 
     local i alive
-    for i in $(seq 1 10); do
+    for ((i = 1; i <= 10; i++)); do
         alive=0
         for pid in "${pids[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
