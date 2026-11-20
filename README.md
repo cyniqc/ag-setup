@@ -2,7 +2,7 @@
 
 Collection d'utilitaires personnels pour Linux.
 
-## `install-antigravity.sh`
+## `ag-setup.sh`
 
 Script d'**installation et de mise à jour automatique** pour **Google Antigravity (Hub / 2.0)** sur Linux.
 
@@ -34,28 +34,28 @@ Il permet aussi bien d'**installer Google Antigravity depuis zéro** sur un syst
 
 ```bash
 # Installer ou mettre à jour automatiquement vers la dernière version
-./install-antigravity.sh
+./ag-setup.sh
 
 # Vérifier uniquement si une mise à jour est disponible (lecture seule, sans rien télécharger)
-./install-antigravity.sh --check
+./ag-setup.sh --check
 
 # Forcer le téléchargement et la réinstallation
-./install-antigravity.sh --force
+./ag-setup.sh --force
 
 # Installer ou mettre à jour sans demander confirmation pour fermer Antigravity
-./install-antigravity.sh --yes
+./ag-setup.sh --yes
 
 # Installer ou mettre à jour sans créer le raccourci bureau, l'icône ni le lien CLI
-./install-antigravity.sh --no-desktop
+./ag-setup.sh --no-desktop
 
-# Installer (ou mettre à jour) une copie du script dans ~/.local/bin/install-antigravity
-./install-antigravity.sh --install-self
+# Installer (ou mettre à jour) une copie du script dans ~/.local/bin/ag-setup
+./ag-setup.sh --install-self
 
 # Installer depuis une archive .tar.gz locale (puis la supprimer)
-./install-antigravity.sh /chemin/vers/Antigravity.tar.gz
+./ag-setup.sh /chemin/vers/Antigravity.tar.gz
 
 # Afficher l'aide
-./install-antigravity.sh --help
+./ag-setup.sh --help
 ```
 
 ### Variables d'environnement optionnelles

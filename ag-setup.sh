@@ -33,7 +33,7 @@ trap cleanup EXIT INT TERM
 
 usage() {
     cat <<'EOF'
-Usage: install-antigravity.sh [OPTIONS] [chemin_vers_archive.tar.gz]
+Usage: ag-setup.sh [OPTIONS] [chemin_vers_archive.tar.gz]
 
 Installe ou met à jour Google Antigravity (Hub) dans "$HOME/.local/share/antigravity"
 (ou dans le dossier défini par la variable d'environnement DEST_DIR) et configure
@@ -49,7 +49,7 @@ Options :
   -f, --force         Force le téléchargement et la réinstallation même si déjà à jour
   -y, --yes           Ferme Antigravity automatiquement sans demander confirmation
       --no-desktop    Ne crée ni le lanceur .desktop, ni l'icône, ni le lien dans BIN_DIR
-      --install-self  Copie ce script dans "$BIN_DIR/install-antigravity" pour l'utiliser de partout
+      --install-self  Copie ce script dans "$BIN_DIR/ag-setup" pour l'utiliser de partout
   -h, --help          Affiche cette aide et quitte
 
 Compatibilité :
@@ -685,7 +685,7 @@ install_self() {
 
     local src_real target target_real tmp_target
     src_real="$(readlink -f "$src_raw")"
-    target="$BIN_DIR/install-antigravity"
+    target="$BIN_DIR/ag-setup"
 
     mkdir -p "$BIN_DIR"
 
@@ -697,7 +697,7 @@ install_self() {
         fi
     fi
 
-    tmp_target="$(mktemp "$BIN_DIR/.install-antigravity.XXXXXX")"
+    tmp_target="$(mktemp "$BIN_DIR/.ag-setup.XXXXXX")"
     if ! cp "$src_real" "$tmp_target" || ! chmod 755 "$tmp_target" || ! mv -f "$tmp_target" "$target"; then
         rm -f "$tmp_target"
         echo "Erreur : impossible d'installer le script dans '$target'." >&2
@@ -705,7 +705,7 @@ install_self() {
     fi
 
     echo "Script installé avec succès dans '$target'."
-    warn_if_not_in_path "install-antigravity"
+    warn_if_not_in_path "ag-setup"
 }
 
 main() {
