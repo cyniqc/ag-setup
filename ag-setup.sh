@@ -2,6 +2,8 @@
 set -euo pipefail
 
 DOWNLOAD_PAGE_URL="https://antigravity.google/download"
+HUB_RELEASES_API_URL="https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases"
+HUB_DOWNLOAD_BASE_URL="https://storage.googleapis.com/antigravity-public/antigravity-hub"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 DEST_DIR="${DEST_DIR:-$XDG_DATA_HOME/antigravity}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
@@ -54,17 +56,18 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 usage() {
+    printf 'Usage: %s [OPTIONS]\n' "$(basename "$0")"
     cat <<'EOF'
-Usage: ag-setup.sh [OPTIONS]
 
 Installs or updates Google Antigravity (Hub) in "$HOME/.local/share/antigravity"
 (or in the directory defined by the DEST_DIR environment variable) and configures
 desktop integration (.desktop launcher, icon, and 'antigravity' command).
 
 With no arguments:
-  Checks the latest available version at https://antigravity.google/download,
-  downloads it if Antigravity is not installed or an update is available,
-  installs it (with desktop launcher and icon), and removes the downloaded archive.
+  Checks the latest available version via the official Google Antigravity
+  release feed (falling back to https://antigravity.google/download), downloads
+  it if Antigravity is not installed or an update is available, installs it
+  (with desktop launcher and icon), and removes the downloaded archive.
 
 Options:
   -c, --check         Only check if an update is available (read-only)
@@ -143,6 +146,13 @@ validate_safe_dir_var() {
         echo "Error: $var_name must not be empty." >&2
         exit 1
     fi
+
+    case "$val" in
+        *$'\n'*|*$'\r'*)
+            echo "Error: $var_name must not contain newline characters." >&2
+            exit 1
+            ;;
+    esac
 
     case "$val" in
         /*) ;;
@@ -292,55 +302,100 @@ detect_platform() {
     esac
 }
 
-get_local_version() {
-    local dir="${1:-$DEST_DIR}"
-    [ -d "$dir" ] || return 0
+read_app_resource() {
+    local install_dir="$1"
+    local resource_name="$2"
+    local output_path="${3:-}"
+    [ -d "$install_dir" ] || return 1
 
-    python3 - "$dir" <<'PY'
+    python3 - "$install_dir" "$resource_name" "$output_path" <<'PY'
 import json
 import os
 import struct
 import sys
 
-install_dir = sys.argv[1]
-asar_path = os.path.join(install_dir, "resources", "app.asar")
-unpacked_pkg = os.path.join(install_dir, "resources", "app.asar.unpacked", "package.json")
-plain_pkg = os.path.join(install_dir, "resources", "app", "package.json")
+MAX_HEADER_BYTES = 50 * 1024 * 1024
+MAX_RESOURCE_BYTES = 20 * 1024 * 1024
 
+install_dir = sys.argv[1]
+resource_name = sys.argv[2]
+output_path = sys.argv[3] if len(sys.argv) > 3 else ""
+
+asar_path = os.path.join(install_dir, "resources", "app.asar")
+unpacked_path = os.path.join(install_dir, "resources", "app.asar.unpacked", resource_name)
+plain_path = os.path.join(install_dir, "resources", "app", resource_name)
+
+data = None
 try:
     if os.path.isfile(asar_path):
+        file_size = os.path.getsize(asar_path)
+        if file_size < 16:
+            sys.exit(1)
         with open(asar_path, "rb") as f:
             f.seek(4)
             header_pickle_size = struct.unpack("<I", f.read(4))[0]
             f.seek(12)
             json_len = struct.unpack("<I", f.read(4))[0]
+            if json_len <= 0 or json_len > MAX_HEADER_BYTES or 16 + json_len > file_size:
+                sys.exit(1)
             header = json.loads(f.read(json_len).decode("utf-8"))
             base = 8 + header_pickle_size
 
-            info = header.get("files", {}).get("package.json")
+            info = header.get("files", {}).get(resource_name)
             if isinstance(info, dict):
                 if info.get("unpacked"):
-                    if os.path.isfile(unpacked_pkg):
-                        with open(unpacked_pkg, "r", encoding="utf-8") as pf:
-                            pkg = json.load(pf)
-                            ver = pkg.get("version", "")
-                            if isinstance(ver, str) and ver:
-                                print(ver)
+                    if os.path.isfile(unpacked_path) and os.path.getsize(unpacked_path) <= MAX_RESOURCE_BYTES:
+                        with open(unpacked_path, "rb") as rf:
+                            data = rf.read()
                 elif "offset" in info and "size" in info:
-                    f.seek(base + int(info["offset"]))
-                    pkg = json.loads(f.read(int(info["size"])).decode("utf-8"))
-                    ver = pkg.get("version", "")
-                    if isinstance(ver, str) and ver:
-                        print(ver)
-    elif os.path.isfile(plain_pkg):
-        with open(plain_pkg, "r", encoding="utf-8") as pf:
-            pkg = json.load(pf)
-            ver = pkg.get("version", "")
-            if isinstance(ver, str) and ver:
-                print(ver)
+                    offset = int(info["offset"])
+                    size = int(info["size"])
+                    if offset < 0 or size < 0 or size > MAX_RESOURCE_BYTES or base + offset + size > file_size:
+                        sys.exit(1)
+                    f.seek(base + offset)
+                    data = f.read(size)
+    elif os.path.isfile(plain_path) and os.path.getsize(plain_path) <= MAX_RESOURCE_BYTES:
+        with open(plain_path, "rb") as rf:
+            data = rf.read()
+
+    if data is None:
+        sys.exit(1)
+
+    if output_path:
+        parent = os.path.dirname(output_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(output_path, "wb") as out:
+            out.write(data)
+    else:
+        sys.stdout.buffer.write(data)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+get_local_version() {
+    local dir="${1:-$DEST_DIR}"
+    [ -d "$dir" ] || return 0
+
+    local pkg_json=""
+    if ! pkg_json="$(read_app_resource "$dir" "package.json" 2>/dev/null)"; then
+        return 0
+    fi
+    [ -n "$pkg_json" ] || return 0
+
+    python3 -c '
+import json
+import sys
+
+try:
+    pkg = json.loads(sys.stdin.read())
+    ver = pkg.get("version", "")
+    if isinstance(ver, str) and ver:
+        print(ver)
 except Exception:
     pass
-PY
+' <<< "$pkg_json"
 }
 
 extract_app_icon() {
@@ -348,51 +403,60 @@ extract_app_icon() {
     local target_png="$2"
     [ -d "$install_dir" ] || return 1
 
-    python3 - "$install_dir" "$target_png" <<'PY'
-import json
-import os
-import struct
+    local parent_dir tmp_icon
+    parent_dir="$(dirname "$target_png")"
+    mkdir -p "$parent_dir"
+    tmp_icon="$(mktemp "$parent_dir/.antigravity-icon.XXXXXX")"
+
+    if ! read_app_resource "$install_dir" "icon.png" "$tmp_icon" 2>/dev/null; then
+        rm -f "$tmp_icon"
+        return 1
+    fi
+
+    if ! python3 - "$tmp_icon" <<'PY'
 import sys
 
-install_dir = sys.argv[1]
-target_png = sys.argv[2]
-asar_path = os.path.join(install_dir, "resources", "app.asar")
-unpacked_icon = os.path.join(install_dir, "resources", "app.asar.unpacked", "icon.png")
-plain_icon = os.path.join(install_dir, "resources", "app", "icon.png")
 png_magic = b"\x89PNG\r\n\x1a\n"
-
-icon_data = None
 try:
-    if os.path.isfile(asar_path):
-        with open(asar_path, "rb") as f:
-            f.seek(4)
-            header_pickle_size = struct.unpack("<I", f.read(4))[0]
-            f.seek(12)
-            json_len = struct.unpack("<I", f.read(4))[0]
-            header = json.loads(f.read(json_len).decode("utf-8"))
-            base = 8 + header_pickle_size
-
-            info = header.get("files", {}).get("icon.png")
-            if isinstance(info, dict):
-                if info.get("unpacked"):
-                    if os.path.isfile(unpacked_icon):
-                        with open(unpacked_icon, "rb") as icf:
-                            icon_data = icf.read()
-                elif "offset" in info and "size" in info:
-                    f.seek(base + int(info["offset"]))
-                    icon_data = f.read(int(info["size"]))
-    elif os.path.isfile(plain_icon):
-        with open(plain_icon, "rb") as icf:
-            icon_data = icf.read()
-
-    if not icon_data or not icon_data.startswith(png_magic):
-        sys.exit(1)
-
-    os.makedirs(os.path.dirname(target_png), exist_ok=True)
-    with open(target_png, "wb") as out:
-        out.write(icon_data)
+    with open(sys.argv[1], "rb") as f:
+        header = f.read(8)
+    sys.exit(0 if header == png_magic else 1)
 except Exception:
     sys.exit(1)
+PY
+    then
+        rm -f "$tmp_icon"
+        return 1
+    fi
+
+    if ! chmod 644 "$tmp_icon" || ! mv -f "$tmp_icon" "$target_png"; then
+        rm -f "$tmp_icon"
+        return 1
+    fi
+}
+
+format_desktop_exec() {
+    local exe_path="$1"
+    python3 - "$exe_path" <<'PY'
+import sys
+
+path = sys.argv[1]
+reserved = set(" \t\n\"'\\><~|&;$*?#()`")
+
+escaped = path.replace("%", "%%")
+if any(ch in reserved for ch in escaped) or not escaped:
+    quoted_inner = (
+        escaped.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("`", "\\`")
+        .replace("$", "\\$")
+    )
+    arg = f'"{quoted_inner}"'
+    arg = arg.replace("\\", "\\\\")
+else:
+    arg = escaped
+
+print(f"{arg} %U")
 PY
 }
 
@@ -407,24 +471,21 @@ setup_desktop_integration() {
     local icon_target="$ICON_DIR/antigravity.png"
     local icon_value="applications-development"
     if extract_app_icon "$DEST_DIR" "$icon_target"; then
-        chmod 644 "$icon_target"
         icon_value="$icon_target"
-        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-            gtk-update-icon-cache -f -t "$XDG_DATA_HOME/icons/hicolor" >/dev/null 2>&1 || true
-        fi
+        case "$ICON_DIR" in
+            */icons/hicolor|*/icons/hicolor/*)
+                local hicolor_root="${ICON_DIR%/icons/hicolor*}/icons/hicolor"
+                if [ -d "$hicolor_root" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
+                    gtk-update-icon-cache -f -t "$hicolor_root" >/dev/null 2>&1 || true
+                fi
+                ;;
+        esac
     fi
 
     mkdir -p "$DESKTOP_DIR"
     local desktop_file="$DESKTOP_DIR/antigravity.desktop"
     local exec_cmd
-    case "$DEST_DIR" in
-        *" "*)
-            exec_cmd="\"$DEST_DIR/antigravity\" %U"
-            ;;
-        *)
-            exec_cmd="$DEST_DIR/antigravity %U"
-            ;;
-    esac
+    exec_cmd="$(format_desktop_exec "$DEST_DIR/antigravity")"
 
     cat > "$desktop_file" <<EOF
 [Desktop Entry]
@@ -463,13 +524,110 @@ desktop_integration_complete() {
         && [ -f "$ICON_DIR/antigravity.png" ]
 }
 
-fetch_remote_release() {
-    local platform="$1"
-    local html_file="$TMP_DIR/download.html"
+validate_download_url() {
+    local url="$1"
+    python3 - "$url" <<'PY'
+import sys
+from urllib.parse import urlparse
 
-    download_file "$DOWNLOAD_PAGE_URL" "$html_file" "quiet"
+url = sys.argv[1]
+try:
+    parsed = urlparse(url)
+except Exception:
+    sys.stderr.write(f"Error: untrusted download URL rejected: {url}\n")
+    sys.exit(1)
 
-    python3 - "$html_file" "$platform" <<'PY'
+host = (parsed.hostname or "").lower().rstrip(".")
+path = parsed.path or ""
+allowed = (
+    parsed.scheme == "https"
+    and parsed.username is None
+    and parsed.password is None
+    and bool(host)
+    and ".." not in path.split("/")
+    and path.endswith(".tar.gz")
+    and (
+        (host == "storage.googleapis.com" and path.startswith("/antigravity-public/antigravity-hub/"))
+        or host in ("edgedl.me.gvt1.com", "dl.google.com", "antigravity.google")
+        or host.endswith(".antigravity.google")
+    )
+)
+
+if not allowed:
+    sys.stderr.write(f"Error: untrusted download URL rejected: {url}\n")
+    sys.exit(1)
+PY
+}
+
+parse_releases_json() {
+    local json_file="$1"
+    local platform="$2"
+    local parsed_info remote_ver download_url
+
+    parsed_info="$(python3 - "$json_file" "$platform" "$HUB_DOWNLOAD_BASE_URL" <<'PY'
+import json
+import re
+import sys
+
+json_path = sys.argv[1]
+platform = sys.argv[2]
+base_url = sys.argv[3].rstrip("/")
+
+try:
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+except Exception as exc:
+    sys.stderr.write(f"Error: invalid release feed JSON: {exc}\n")
+    sys.exit(1)
+
+if isinstance(payload, list):
+    entries = payload
+elif isinstance(payload, dict) and isinstance(payload.get("versions"), list):
+    entries = payload["versions"]
+else:
+    sys.stderr.write("Error: unexpected release feed JSON structure.\n")
+    sys.exit(1)
+
+if not entries or not isinstance(entries[0], dict):
+    sys.stderr.write("Error: release feed contains no release entries.\n")
+    sys.exit(1)
+
+latest = entries[0]
+version = latest.get("version")
+execution_id = latest.get("execution_id")
+
+if (
+    not isinstance(version, str)
+    or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version)
+    or ".." in version
+    or not isinstance(execution_id, str)
+    or not re.fullmatch(r'\d+', execution_id)
+):
+    sys.stderr.write("Error: invalid release metadata in feed.\n")
+    sys.exit(1)
+
+download_url = f"{base_url}/{version}-{execution_id}/{platform}/Antigravity.tar.gz"
+print(version)
+print(download_url)
+PY
+)" || return 1
+
+    remote_ver="$(printf '%s\n' "$parsed_info" | sed -n '1p')"
+    download_url="$(printf '%s\n' "$parsed_info" | sed -n '2p')"
+    if [ -z "$remote_ver" ] || [ -z "$download_url" ]; then
+        return 1
+    fi
+
+    validate_download_url "$download_url" || return 1
+    printf '%s\n%s\n' "$remote_ver" "$download_url"
+}
+
+parse_download_html() {
+    local html_file="$1"
+    local platform="$2"
+    local parsed_info remote_ver download_url
+
+    parsed_info="$(python3 - "$html_file" "$platform" <<'PY'
 from html.parser import HTMLParser
 import re
 import sys
@@ -535,15 +693,16 @@ if not download_url:
 
 remote_version = ""
 ver_match = re.search(
-    r'/(\d+\.\d+\.\d+)(?:-[^/]+)?/' + re.escape(platform) + r'/',
+    r'/(\d+\.\d+\.\d+(?:-(?!\d+/)[^/]+?)?)(?:-\d+)?/' + re.escape(platform) + r'/',
     download_url,
 )
 if ver_match:
     remote_version = ver_match.group(1)
 elif parser.latest_version_text:
     candidate = parser.latest_version_text.lstrip("vV").strip()
-    if re.match(r'^\d+\.\d+\.\d+', candidate):
-        remote_version = candidate
+    ver_fallback = re.match(r'^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)', candidate)
+    if ver_fallback:
+        remote_version = ver_fallback.group(1)
 
 if not remote_version:
     sys.stderr.write(
@@ -554,6 +713,38 @@ if not remote_version:
 print(remote_version)
 print(download_url)
 PY
+)" || return 1
+
+    remote_ver="$(printf '%s\n' "$parsed_info" | sed -n '1p')"
+    download_url="$(printf '%s\n' "$parsed_info" | sed -n '2p')"
+    if [ -z "$remote_ver" ] || [ -z "$download_url" ]; then
+        return 1
+    fi
+
+    validate_download_url "$download_url" || return 1
+    printf '%s\n%s\n' "$remote_ver" "$download_url"
+}
+
+fetch_remote_release() {
+    local platform="$1"
+    local json_file="$TMP_DIR/releases.json"
+    local html_file="$TMP_DIR/download.html"
+    local result="" remote_ver="" download_url=""
+
+    if download_file "$HUB_RELEASES_API_URL" "$json_file" "quiet" 2>/dev/null; then
+        if result="$(parse_releases_json "$json_file" "$platform" 2>/dev/null)"; then
+            remote_ver="$(printf '%s\n' "$result" | sed -n '1p')"
+            download_url="$(printf '%s\n' "$result" | sed -n '2p')"
+            if [ -n "$remote_ver" ] && [ -n "$download_url" ]; then
+                printf '%s\n%s\n' "$remote_ver" "$download_url"
+                return 0
+            fi
+        fi
+    fi
+
+    echo "Warning: release feed unavailable, falling back to $DOWNLOAD_PAGE_URL..." >&2
+    download_file "$DOWNLOAD_PAGE_URL" "$html_file" "quiet"
+    parse_download_html "$html_file" "$platform"
 }
 
 is_newer_version() {
@@ -568,18 +759,60 @@ is_newer_version() {
 import re
 import sys
 
-local_ver = sys.argv[1]
-remote_ver = sys.argv[2]
 
-local_parts = tuple(int(x) for x in re.findall(r'\d+', local_ver))
-remote_parts = tuple(int(x) for x in re.findall(r'\d+', remote_ver))
+def parse_semver(ver):
+    s = ver.strip().lstrip("vV")
+    s = s.split("+", 1)[0]
+    if "-" in s:
+        core_str, pre_str = s.split("-", 1)
+    else:
+        core_str, pre_str = s, None
 
-if not remote_parts:
+    core_nums = [int(x) for x in re.findall(r'\d+', core_str)]
+    if not core_nums:
+        return None
+
+    if pre_str == "" or pre_str is None:
+        pre = None
+    else:
+        pre = []
+        for part in pre_str.split("."):
+            tokens = re.findall(r'\d+|[A-Za-z]+', part)
+            segs = [
+                (0, int(tok)) if tok.isdigit() else (1, tok.lower())
+                for tok in tokens
+            ]
+            pre.append(segs)
+
+    return core_nums, pre
+
+
+local_parsed = parse_semver(sys.argv[1])
+remote_parsed = parse_semver(sys.argv[2])
+
+if remote_parsed is None:
     sys.exit(1)
-if not local_parts:
+if local_parsed is None:
     sys.exit(0)
 
-sys.exit(0 if remote_parts > local_parts else 1)
+local_core, local_pre = local_parsed
+remote_core, remote_pre = remote_parsed
+
+max_len = max(len(local_core), len(remote_core))
+local_core += [0] * (max_len - len(local_core))
+remote_core += [0] * (max_len - len(remote_core))
+
+if remote_core != local_core:
+    sys.exit(0 if remote_core > local_core else 1)
+
+if local_pre is None and remote_pre is None:
+    sys.exit(1)
+if local_pre is not None and remote_pre is None:
+    sys.exit(0)
+if local_pre is None and remote_pre is not None:
+    sys.exit(1)
+
+sys.exit(0 if remote_pre > local_pre else 1)
 PY
 }
 
@@ -701,7 +934,12 @@ if proc.returncode != 0:
 entries = []
 for raw in proc.stdout.splitlines():
     line = raw.rstrip("\r\n")
-    if not line or line in (".", "./"):
+    if not line:
+        continue
+    if line.startswith("/") or ".." in line.split("/"):
+        sys.stderr.write(f"Error: archive contains unsafe path: {line}\n")
+        sys.exit(1)
+    if line in (".", "./"):
         continue
     entries.append(line)
 
@@ -740,15 +978,16 @@ install_archive() {
     echo "Extracting archive..."
     strip_count="$(detect_strip_components "$archive_path")"
     if [ "$strip_count" -gt 0 ]; then
-        tar -xzf "$archive_path" -C "$STAGE_DIR" --strip-components="$strip_count"
+        tar --no-same-owner -xzf "$archive_path" -C "$STAGE_DIR" --strip-components="$strip_count"
     else
-        tar -xzf "$archive_path" -C "$STAGE_DIR"
+        tar --no-same-owner -xzf "$archive_path" -C "$STAGE_DIR"
     fi
 
     if [ ! -f "$STAGE_DIR/antigravity" ]; then
         echo "Error: extracted archive does not contain the 'antigravity' binary." >&2
         exit 1
     fi
+    [ -x "$STAGE_DIR/antigravity" ] || chmod 755 "$STAGE_DIR/antigravity"
 
     chmod 755 "$STAGE_DIR"
 
