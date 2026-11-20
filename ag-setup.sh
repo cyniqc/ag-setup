@@ -834,6 +834,79 @@ find_antigravity_pids() {
     done
 }
 
+find_antigravity_root_pids() {
+    [ "$#" -gt 0 ] || return 0
+
+    python3 - "$@" <<'PY'
+import os
+import sys
+
+pids = [arg for arg in sys.argv[1:] if arg.isdigit() and os.path.isdir(f"/proc/{arg}")]
+pid_set = set(pids)
+ppid_cache = {}
+
+
+def read_ppid(pid):
+    if pid in ppid_cache:
+        return ppid_cache[pid]
+    ppid = None
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    val = line.split(":", 1)[1].strip()
+                    if val.isdigit():
+                        ppid = val
+                    break
+    except OSError:
+        ppid = None
+    ppid_cache[pid] = ppid
+    return ppid
+
+
+def is_typed_child(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = f.read().split(b"\x00")
+        return any(arg.startswith(b"--type=") for arg in args)
+    except OSError:
+        return False
+
+
+def has_antigravity_ancestor(pid):
+    seen = set()
+    cur = read_ppid(pid)
+    while cur and cur not in seen and int(cur) > 1:
+        if cur in pid_set:
+            return True
+        seen.add(cur)
+        cur = read_ppid(cur)
+    return False
+
+
+top_level = [p for p in pids if not has_antigravity_ancestor(p)]
+primary = [p for p in top_level if not is_typed_child(p)]
+for pid in primary or top_level or pids:
+    print(pid)
+PY
+}
+
+wait_for_antigravity_exit() {
+    local max_checks="$1"
+    local i remaining
+
+    for ((i = 1; i <= max_checks; i++)); do
+        remaining="$(find_antigravity_pids)"
+        if [ -z "$remaining" ]; then
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    remaining="$(find_antigravity_pids)"
+    [ -z "$remaining" ]
+}
+
 confirm_close_if_running() {
     if [ "$ASSUME_YES" -eq 1 ] || [ "$CLOSE_CONFIRMED" -eq 1 ]; then
         return 0
@@ -882,9 +955,13 @@ confirm_close_if_running() {
 
 close_antigravity() {
     local pids=()
+    local root_pids=()
+    local remaining_pids=()
     local pid
     while IFS= read -r pid; do
-        [ -n "$pid" ] && pids+=("$pid")
+        if [ -n "$pid" ]; then
+            pids+=("$pid")
+        fi
     done < <(find_antigravity_pids)
 
     if [ "${#pids[@]}" -eq 0 ]; then
@@ -898,22 +975,38 @@ close_antigravity() {
 
     echo "Closing Antigravity (${#pids[@]} $proc_label)..."
     trap '' HUP
-    kill -TERM "${pids[@]}" 2>/dev/null || true
 
-    local i alive
-    for ((i = 1; i <= 10; i++)); do
-        alive=0
-        for pid in "${pids[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                alive=1
-                break
-            fi
-        done
-        if [ "$alive" -eq 0 ]; then
-            return 0
+    while IFS= read -r pid; do
+        if [ -n "$pid" ]; then
+            root_pids+=("$pid")
         fi
-        sleep 0.5
-    done
+    done < <(find_antigravity_root_pids "${pids[@]}")
+
+    if [ "${#root_pids[@]}" -eq 0 ]; then
+        root_pids=("${pids[@]}")
+    fi
+
+    kill -TERM "${root_pids[@]}" 2>/dev/null || true
+
+    if wait_for_antigravity_exit 16; then
+        return 0
+    fi
+
+    while IFS= read -r pid; do
+        if [ -n "$pid" ]; then
+            remaining_pids+=("$pid")
+        fi
+    done < <(find_antigravity_pids)
+
+    if [ "${#remaining_pids[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    kill -TERM "${remaining_pids[@]}" 2>/dev/null || true
+
+    if wait_for_antigravity_exit 6; then
+        return 0
+    fi
 
     echo "Warning: some Antigravity processes are still running; continuing installation." >&2
 }
