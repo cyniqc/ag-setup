@@ -2,10 +2,22 @@
 set -euo pipefail
 
 DOWNLOAD_PAGE_URL="https://antigravity.google/download"
-DEST_DIR="${DEST_DIR:-$HOME/.local/share/antigravity}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DEST_DIR="${DEST_DIR:-$XDG_DATA_HOME/antigravity}"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+DESKTOP_DIR="${DESKTOP_DIR:-$XDG_DATA_HOME/applications}"
+ICON_DIR="${ICON_DIR:-$XDG_DATA_HOME/icons/hicolor/512x512/apps}"
+DOWNLOADER="${DOWNLOADER:-auto}"
+
+[ "$XDG_DATA_HOME" != "/" ] && XDG_DATA_HOME="${XDG_DATA_HOME%/}"
+[ "$DEST_DIR" != "/" ] && DEST_DIR="${DEST_DIR%/}"
+[ "$BIN_DIR" != "/" ] && BIN_DIR="${BIN_DIR%/}"
+[ "$DESKTOP_DIR" != "/" ] && DESKTOP_DIR="${DESKTOP_DIR%/}"
+[ "$ICON_DIR" != "/" ] && ICON_DIR="${ICON_DIR%/}"
 
 TMP_DIR=""
 STAGE_DIR=""
+SELECTED_DOWNLOADER=""
 
 cleanup() {
     if [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
@@ -19,24 +31,68 @@ trap cleanup EXIT INT TERM
 
 usage() {
     cat <<'EOF'
-Usage: update-antigravity.sh [OPTIONS] [chemin_vers_archive.tar.gz]
+Usage: install-antigravity.sh [OPTIONS] [chemin_vers_archive.tar.gz]
 
-Met à jour Google Antigravity (Hub) dans "$HOME/.local/share/antigravity"
-(ou dans le dossier défini par la variable d'environnement DEST_DIR).
+Installe ou met à jour Google Antigravity (Hub) dans "$HOME/.local/share/antigravity"
+(ou dans le dossier défini par la variable d'environnement DEST_DIR) et configure
+l'intégration bureau (lanceur .desktop, icône et commande 'antigravity').
 
 Sans argument :
   Vérifie la dernière version disponible sur https://antigravity.google/download,
-  la télécharge si elle est plus récente que la version installée, l'installe,
-  puis supprime l'archive téléchargée.
+  la télécharge si Antigravity n'est pas installé ou si une mise à jour existe,
+  l'installe (avec raccourci bureau et icône), puis supprime l'archive téléchargée.
 
 Options :
-  -c, --check   Vérifie uniquement si une mise à jour est disponible (sans télécharger ni installer)
-  -f, --force   Force le téléchargement et la réinstallation même si la version est déjà à jour
-  -h, --help    Affiche cette aide et quitte
+  -c, --check       Vérifie uniquement si une mise à jour est disponible (lecture seule)
+  -f, --force       Force le téléchargement et la réinstallation même si déjà à jour
+      --no-desktop  Ne crée ni le lanceur .desktop, ni l'icône, ni le lien dans BIN_DIR
+  -h, --help        Affiche cette aide et quitte
 
 Compatibilité :
   <chemin_vers_archive.tar.gz>  Installe l'archive locale fournie puis la supprime
+
+Variables d'environnement optionnelles :
+  DEST_DIR     Dossier d'installation (défaut : $XDG_DATA_HOME/antigravity)
+  BIN_DIR      Dossier du lien symbolique CLI (défaut : $HOME/.local/bin)
+  DESKTOP_DIR  Dossier du fichier .desktop (défaut : $XDG_DATA_HOME/applications)
+  ICON_DIR     Dossier de l'icône PNG (défaut : $XDG_DATA_HOME/icons/hicolor/512x512/apps)
+  DOWNLOADER   Outil de téléchargement : auto, curl ou wget (défaut : auto)
 EOF
+}
+
+detect_downloader() {
+    case "$DOWNLOADER" in
+        auto)
+            if command -v curl >/dev/null 2>&1; then
+                printf 'curl\n'
+            elif command -v wget >/dev/null 2>&1; then
+                printf 'wget\n'
+            else
+                echo "Erreur : 'curl' ou 'wget' est requis pour le téléchargement." >&2
+                exit 1
+            fi
+            ;;
+        curl)
+            if command -v curl >/dev/null 2>&1; then
+                printf 'curl\n'
+            else
+                echo "Erreur : outil manquant : curl" >&2
+                exit 1
+            fi
+            ;;
+        wget)
+            if command -v wget >/dev/null 2>&1; then
+                printf 'wget\n'
+            else
+                echo "Erreur : outil manquant : wget" >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Erreur : valeur DOWNLOADER invalide '$DOWNLOADER' (attendu : auto, curl ou wget)." >&2
+            exit 1
+            ;;
+    esac
 }
 
 check_dependencies() {
@@ -50,14 +106,53 @@ check_dependencies() {
         fi
     done
 
-    if [ "$mode" != "local" ] && ! command -v curl >/dev/null 2>&1; then
-        missing+=("curl")
-    fi
-
     if [ "${#missing[@]}" -gt 0 ]; then
         echo "Erreur : outil(s) manquant(s) : ${missing[*]}" >&2
         exit 1
     fi
+
+    if [ "$mode" != "local" ]; then
+        SELECTED_DOWNLOADER="$(detect_downloader)"
+    fi
+}
+
+download_file() {
+    local url="$1"
+    local output_path="$2"
+    local mode="$3"
+    local tool="${SELECTED_DOWNLOADER:-}"
+
+    if [ -z "$tool" ]; then
+        tool="$(detect_downloader)"
+        SELECTED_DOWNLOADER="$tool"
+    fi
+
+    case "$tool" in
+        curl)
+            if [ "$mode" = "progress" ]; then
+                curl -fL --progress-bar --proto '=https' --proto-redir '=https' \
+                    --connect-timeout 15 --retry 3 --retry-delay 2 \
+                    -o "$output_path" "$url"
+            else
+                curl -fsSL --proto '=https' --proto-redir '=https' --compressed \
+                    --connect-timeout 15 --retry 3 --retry-delay 2 \
+                    -o "$output_path" "$url"
+            fi
+            ;;
+        wget)
+            if [ "$mode" = "progress" ]; then
+                wget -q --show-progress --https-only --timeout=15 --tries=3 \
+                    -O "$output_path" "$url"
+            else
+                wget -q --https-only --timeout=15 --tries=3 \
+                    -O "$output_path" "$url"
+            fi
+            ;;
+        *)
+            echo "Erreur : téléchargeur inconnu : $tool" >&2
+            exit 1
+            ;;
+    esac
 }
 
 detect_platform() {
@@ -128,12 +223,126 @@ except Exception:
 PY
 }
 
+extract_app_icon() {
+    local install_dir="$1"
+    local target_png="$2"
+    [ -d "$install_dir" ] || return 1
+
+    python3 - "$install_dir" "$target_png" <<'PY'
+import json
+import os
+import struct
+import sys
+
+install_dir = sys.argv[1]
+target_png = sys.argv[2]
+asar_path = os.path.join(install_dir, "resources", "app.asar")
+unpacked_icon = os.path.join(install_dir, "resources", "app.asar.unpacked", "icon.png")
+plain_icon = os.path.join(install_dir, "resources", "app", "icon.png")
+png_magic = b"\x89PNG\r\n\x1a\n"
+
+icon_data = None
+try:
+    if os.path.isfile(asar_path):
+        with open(asar_path, "rb") as f:
+            f.seek(4)
+            header_pickle_size = struct.unpack("<I", f.read(4))[0]
+            f.seek(12)
+            json_len = struct.unpack("<I", f.read(4))[0]
+            header = json.loads(f.read(json_len).decode("utf-8"))
+            base = 8 + header_pickle_size
+
+            info = header.get("files", {}).get("icon.png")
+            if isinstance(info, dict):
+                if info.get("unpacked"):
+                    if os.path.isfile(unpacked_icon):
+                        with open(unpacked_icon, "rb") as icf:
+                            icon_data = icf.read()
+                elif "offset" in info and "size" in info:
+                    f.seek(base + int(info["offset"]))
+                    icon_data = f.read(int(info["size"]))
+    elif os.path.isfile(plain_icon):
+        with open(plain_icon, "rb") as icf:
+            icon_data = icf.read()
+
+    if not icon_data or not icon_data.startswith(png_magic):
+        sys.exit(1)
+
+    os.makedirs(os.path.dirname(target_png), exist_ok=True)
+    with open(target_png, "wb") as out:
+        out.write(icon_data)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+setup_desktop_integration() {
+    mkdir -p "$BIN_DIR"
+    if [ ! -e "$BIN_DIR/antigravity" ] || [ -L "$BIN_DIR/antigravity" ]; then
+        ln -sfn "$DEST_DIR/antigravity" "$BIN_DIR/antigravity"
+    else
+        echo "Avertissement : '$BIN_DIR/antigravity' existe déjà et n'est pas un lien symbolique, il n'a pas été remplacé." >&2
+    fi
+
+    local icon_target="$ICON_DIR/antigravity.png"
+    local icon_value="applications-development"
+    if extract_app_icon "$DEST_DIR" "$icon_target"; then
+        chmod 644 "$icon_target"
+        icon_value="$icon_target"
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t "$XDG_DATA_HOME/icons/hicolor" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    mkdir -p "$DESKTOP_DIR"
+    local desktop_file="$DESKTOP_DIR/antigravity.desktop"
+    local exec_cmd
+    case "$DEST_DIR" in
+        *" "*)
+            exec_cmd="\"$DEST_DIR/antigravity\" %U"
+            ;;
+        *)
+            exec_cmd="$DEST_DIR/antigravity %U"
+            ;;
+    esac
+
+    cat > "$desktop_file" <<EOF
+[Desktop Entry]
+Name=Google Antigravity
+Comment=Agentic Development Environment
+Exec=$exec_cmd
+Icon=$icon_value
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupWMClass=antigravity
+MimeType=x-scheme-handler/antigravity;
+EOF
+    chmod 644 "$desktop_file"
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+    fi
+
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *)
+            echo "Info : ajoute '$BIN_DIR' à ton PATH si la commande 'antigravity' n'est pas reconnue."
+            ;;
+    esac
+}
+
+desktop_integration_complete() {
+    [ -f "$DESKTOP_DIR/antigravity.desktop" ] \
+        && [ -e "$BIN_DIR/antigravity" ] \
+        && [ -f "$ICON_DIR/antigravity.png" ]
+}
+
 fetch_remote_release() {
     local platform="$1"
     local html_file="$TMP_DIR/download.html"
 
-    curl -fsSL --proto '=https' --proto-redir '=https' --compressed \
-        -o "$html_file" "$DOWNLOAD_PAGE_URL"
+    download_file "$DOWNLOAD_PAGE_URL" "$html_file" "quiet"
 
     python3 - "$html_file" "$platform" <<'PY'
 from html.parser import HTMLParser
@@ -343,7 +552,7 @@ install_archive() {
 
     STAGE_DIR="$(mktemp -d "$parent_dir/.antigravity-staging.XXXXXX")"
 
-    echo "Extraction de la mise à jour..."
+    echo "Extraction de l'archive..."
     strip_count="$(detect_strip_components "$archive_path")"
     if [ "$strip_count" -gt 0 ]; then
         tar -xzf "$archive_path" -C "$STAGE_DIR" --strip-components="$strip_count"
@@ -386,9 +595,33 @@ install_archive() {
     rm -f "$archive_path"
 }
 
+print_completion_message() {
+    local previous_ver="$1"
+    local new_ver="$2"
+    local desktop_enabled="$3"
+
+    if [ -z "$previous_ver" ]; then
+        if [ -n "$new_ver" ]; then
+            echo "Installation terminée avec succès (version $new_ver) !"
+        else
+            echo "Installation terminée avec succès !"
+        fi
+        if [ "$desktop_enabled" -eq 1 ]; then
+            echo "Tu peux maintenant lancer Google Antigravity depuis le menu d'applications ou avec la commande 'antigravity'."
+        fi
+    else
+        if [ -n "$new_ver" ]; then
+            echo "Mise à jour terminée avec succès ($previous_ver -> $new_ver) !"
+        else
+            echo "Mise à jour terminée avec succès !"
+        fi
+    fi
+}
+
 main() {
     local check_only=0
     local force_install=0
+    local setup_desktop=1
     local local_archive=""
 
     while [ "$#" -gt 0 ]; do
@@ -398,6 +631,9 @@ main() {
                 ;;
             -f|--force)
                 force_install=1
+                ;;
+            --no-desktop)
+                setup_desktop=0
                 ;;
             -h|--help)
                 usage
@@ -435,14 +671,11 @@ main() {
         local_ver="$(get_local_version "$DEST_DIR")"
         echo "Version installée : ${local_ver:-non installée}"
         install_archive "$local_archive"
-        new_ver="$(get_local_version "$DEST_DIR")"
-        if [ -n "$local_ver" ] && [ -n "$new_ver" ]; then
-            echo "Mise à jour terminée avec succès ($local_ver -> $new_ver) !"
-        elif [ -n "$new_ver" ]; then
-            echo "Mise à jour terminée avec succès (version $new_ver) !"
-        else
-            echo "Mise à jour terminée avec succès !"
+        if [ "$setup_desktop" -eq 1 ]; then
+            setup_desktop_integration
         fi
+        new_ver="$(get_local_version "$DEST_DIR")"
+        print_completion_message "$local_ver" "$new_ver" "$setup_desktop"
         exit 0
     fi
 
@@ -464,7 +697,11 @@ main() {
 
     if [ "$check_only" -eq 1 ]; then
         if is_newer_version "$local_ver" "$remote_ver"; then
-            echo "Une nouvelle version est disponible : $remote_ver"
+            if [ -z "$local_ver" ]; then
+                echo "Google Antigravity n'est pas encore installé. Version disponible : $remote_ver"
+            else
+                echo "Une nouvelle version est disponible : $remote_ver"
+            fi
             echo "Lien : $download_url"
         else
             echo "Google Antigravity est déjà à jour ($local_ver)."
@@ -473,25 +710,27 @@ main() {
     fi
 
     if [ "$force_install" -eq 0 ] && ! is_newer_version "$local_ver" "$remote_ver"; then
-        echo "Google Antigravity est déjà à jour ($local_ver)."
+        if [ "$setup_desktop" -eq 1 ] && ! desktop_integration_complete; then
+            echo "Google Antigravity est déjà à jour ($local_ver). Configuration de l'intégration bureau..."
+            setup_desktop_integration
+            echo "Intégration bureau configurée avec succès !"
+        else
+            echo "Google Antigravity est déjà à jour ($local_ver)."
+        fi
         exit 0
     fi
 
     archive_file="$TMP_DIR/Antigravity.tar.gz"
     echo "Téléchargement de Google Antigravity $remote_ver..."
-    curl -fL --progress-bar --proto '=https' --proto-redir '=https' \
-        -o "$archive_file" "$download_url"
+    download_file "$download_url" "$archive_file" "progress"
 
     install_archive "$archive_file"
+    if [ "$setup_desktop" -eq 1 ]; then
+        setup_desktop_integration
+    fi
 
     new_ver="$(get_local_version "$DEST_DIR")"
-    if [ -n "$local_ver" ] && [ -n "$new_ver" ]; then
-        echo "Mise à jour terminée avec succès ($local_ver -> $new_ver) !"
-    elif [ -n "$new_ver" ]; then
-        echo "Mise à jour terminée avec succès (version $new_ver) !"
-    else
-        echo "Mise à jour terminée avec succès !"
-    fi
+    print_completion_message "$local_ver" "$new_ver" "$setup_desktop"
 }
 
 main "$@"
