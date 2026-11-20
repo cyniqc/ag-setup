@@ -9,31 +9,53 @@ DESKTOP_DIR="${DESKTOP_DIR:-$XDG_DATA_HOME/applications}"
 ICON_DIR="${ICON_DIR:-$XDG_DATA_HOME/icons/hicolor/512x512/apps}"
 DOWNLOADER="${DOWNLOADER:-auto}"
 
-[ "$XDG_DATA_HOME" != "/" ] && XDG_DATA_HOME="${XDG_DATA_HOME%/}"
-[ "$DEST_DIR" != "/" ] && DEST_DIR="${DEST_DIR%/}"
-[ "$BIN_DIR" != "/" ] && BIN_DIR="${BIN_DIR%/}"
-[ "$DESKTOP_DIR" != "/" ] && DESKTOP_DIR="${DESKTOP_DIR%/}"
-[ "$ICON_DIR" != "/" ] && ICON_DIR="${ICON_DIR%/}"
+normalize_dir_path() {
+    local p="$1"
+    while [ "$p" != "/" ] && [ "${p%/}" != "$p" ]; do
+        p="${p%/}"
+    done
+    printf '%s\n' "$p"
+}
+
+XDG_DATA_HOME="$(normalize_dir_path "$XDG_DATA_HOME")"
+DEST_DIR="$(normalize_dir_path "$DEST_DIR")"
+BIN_DIR="$(normalize_dir_path "$BIN_DIR")"
+DESKTOP_DIR="$(normalize_dir_path "$DESKTOP_DIR")"
+ICON_DIR="$(normalize_dir_path "$ICON_DIR")"
 
 TMP_DIR=""
 STAGE_DIR=""
+BACKUP_CONTAINER=""
+BACKUP_DIR=""
+TMP_SELF_TARGET=""
 SELECTED_DOWNLOADER=""
 ASSUME_YES=0
 CLOSE_CONFIRMED=0
 
 cleanup() {
+    if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ] && [ ! -e "$DEST_DIR" ]; then
+        mv "$BACKUP_DIR" "$DEST_DIR" 2>/dev/null || true
+    fi
+    if [ -n "$BACKUP_CONTAINER" ] && [ -d "$BACKUP_CONTAINER" ]; then
+        rm -rf "$BACKUP_CONTAINER"
+    fi
     if [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
         rm -rf "$STAGE_DIR"
     fi
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR"
     fi
+    if [ -n "$TMP_SELF_TARGET" ] && [ -f "$TMP_SELF_TARGET" ]; then
+        rm -f "$TMP_SELF_TARGET"
+    fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
     cat <<'EOF'
-Usage: ag-setup.sh [OPTIONS] [path_to_archive.tar.gz]
+Usage: ag-setup.sh [OPTIONS]
 
 Installs or updates Google Antigravity (Hub) in "$HOME/.local/share/antigravity"
 (or in the directory defined by the DEST_DIR environment variable) and configures
@@ -51,9 +73,6 @@ Options:
       --no-desktop    Do not create the .desktop launcher, icon, or BIN_DIR symlink
       --install-self  Copy this script to "$BIN_DIR/ag-setup" so it can be run from anywhere
   -h, --help          Show this help message and exit
-
-Compatibility:
-  <path_to_archive.tar.gz>  Install the provided local archive and then remove it
 
 Optional environment variables:
   DEST_DIR     Installation directory (default: $XDG_DATA_HOME/antigravity)
@@ -99,8 +118,107 @@ detect_downloader() {
     esac
 }
 
+check_os() {
+    local os_name
+    os_name="$(uname -s)"
+    if [ "$os_name" != "Linux" ]; then
+        echo "Error: Google Antigravity setup is only supported on Linux (detected: $os_name)." >&2
+        exit 1
+    fi
+}
+
+check_not_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "Error: do not run this script as root or with sudo; it installs for the current user." >&2
+        exit 1
+    fi
+}
+
+validate_safe_dir_var() {
+    local var_name="$1"
+    local val="$2"
+    local resolved
+
+    if [ -z "$val" ]; then
+        echo "Error: $var_name must not be empty." >&2
+        exit 1
+    fi
+
+    case "$val" in
+        /*) ;;
+        *)
+            echo "Error: $var_name must be an absolute path (got: '$val')." >&2
+            exit 1
+            ;;
+    esac
+
+    case "/$val/" in
+        */../*)
+            echo "Error: $var_name must not contain '..' path components (got: '$val')." >&2
+            exit 1
+            ;;
+    esac
+
+    resolved="$(readlink -m "$val" 2>/dev/null || printf '%s\n' "$val")"
+    if [ "$val" = "/" ] || [ "$resolved" = "/" ]; then
+        echo "Error: $var_name cannot be '/'." >&2
+        exit 1
+    fi
+}
+
+validate_dest_dir() {
+    validate_safe_dir_var "DEST_DIR" "$DEST_DIR"
+
+    local resolved_dest home_norm home_resolved xdg_norm xdg_resolved candidate
+    resolved_dest="$(readlink -m "$DEST_DIR")"
+
+    home_norm="$(normalize_dir_path "${HOME:-}")"
+    home_resolved=""
+    if [ -n "$home_norm" ]; then
+        home_resolved="$(readlink -m "$home_norm" 2>/dev/null || printf '%s\n' "$home_norm")"
+    fi
+
+    xdg_norm="$(normalize_dir_path "$XDG_DATA_HOME")"
+    xdg_resolved=""
+    if [ -n "$xdg_norm" ]; then
+        xdg_resolved="$(readlink -m "$xdg_norm" 2>/dev/null || printf '%s\n' "$xdg_norm")"
+    fi
+
+    for candidate in "$DEST_DIR" "$resolved_dest"; do
+        if [ -n "$home_norm" ] && { [ "$candidate" = "$home_norm" ] || [ "$candidate" = "$home_resolved" ]; }; then
+            echo "Error: refusing to use HOME directory as DEST_DIR ('$DEST_DIR')." >&2
+            exit 1
+        fi
+        if [ -n "$xdg_norm" ] && { [ "$candidate" = "$xdg_norm" ] || [ "$candidate" = "$xdg_resolved" ]; }; then
+            echo "Error: refusing to use XDG_DATA_HOME directory as DEST_DIR ('$DEST_DIR')." >&2
+            exit 1
+        fi
+        case "$candidate" in
+            /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/usr/local|/var)
+                echo "Error: refusing to use unsafe system directory as DEST_DIR ('$DEST_DIR')." >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
+validate_existing_dest_dir() {
+    if [ -L "$DEST_DIR" ] || { [ -e "$DEST_DIR" ] && [ ! -d "$DEST_DIR" ]; }; then
+        echo "Error: '$DEST_DIR' exists and is not a regular directory." >&2
+        exit 1
+    fi
+
+    if [ -d "$DEST_DIR" ] && [ -n "$(ls -A "$DEST_DIR" 2>/dev/null)" ]; then
+        if [ ! -f "$DEST_DIR/antigravity" ] \
+            && [ ! -f "$DEST_DIR/resources/app.asar" ] \
+            && [ ! -d "$DEST_DIR/resources/app" ]; then
+            echo "Error: '$DEST_DIR' already exists, is not empty, and does not look like a Google Antigravity installation. Refusing to overwrite it." >&2
+            exit 1
+        fi
+    fi
+}
+
 check_dependencies() {
-    local mode="$1"
     local missing=()
     local cmd
 
@@ -115,9 +233,7 @@ check_dependencies() {
         exit 1
     fi
 
-    if [ "$mode" != "local" ]; then
-        SELECTED_DOWNLOADER="$(detect_downloader)"
-    fi
+    SELECTED_DOWNLOADER="$(detect_downloader)"
 }
 
 download_file() {
@@ -612,7 +728,9 @@ PY
 
 install_archive() {
     local archive_path="$1"
-    local parent_dir backup_dir strip_count
+    local parent_dir strip_count
+
+    validate_existing_dest_dir
 
     parent_dir="$(dirname "$DEST_DIR")"
     mkdir -p "$parent_dir"
@@ -637,30 +755,26 @@ install_archive() {
     confirm_close_if_running
     close_antigravity
 
-    backup_dir="$parent_dir/.antigravity-backup.$$"
-    if [ -e "$backup_dir" ]; then
-        rm -rf "$backup_dir"
-    fi
-
     if [ -e "$DEST_DIR" ]; then
-        mv "$DEST_DIR" "$backup_dir"
+        BACKUP_CONTAINER="$(mktemp -d "$parent_dir/.antigravity-backup.XXXXXX")"
+        BACKUP_DIR="$BACKUP_CONTAINER/previous"
+        mv "$DEST_DIR" "$BACKUP_DIR"
     fi
 
     if ! mv "$STAGE_DIR" "$DEST_DIR"; then
         echo "Error: unable to install the new version into $DEST_DIR." >&2
-        if [ -e "$backup_dir" ] && [ ! -e "$DEST_DIR" ]; then
-            mv "$backup_dir" "$DEST_DIR" || true
+        if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ] && [ ! -e "$DEST_DIR" ]; then
+            mv "$BACKUP_DIR" "$DEST_DIR" || true
         fi
         exit 1
     fi
     STAGE_DIR=""
 
-    if [ -e "$backup_dir" ]; then
-        rm -rf "$backup_dir"
+    if [ -n "$BACKUP_CONTAINER" ] && [ -d "$BACKUP_CONTAINER" ]; then
+        rm -rf "$BACKUP_CONTAINER"
     fi
-
-    echo "Removing archive file..."
-    rm -f "$archive_path"
+    BACKUP_CONTAINER=""
+    BACKUP_DIR=""
 }
 
 print_completion_message() {
@@ -693,7 +807,7 @@ install_self() {
         exit 1
     fi
 
-    local src_real target target_real tmp_target
+    local src_real target target_real
     src_real="$(readlink -f "$src_raw")"
     target="$BIN_DIR/ag-setup"
 
@@ -707,12 +821,14 @@ install_self() {
         fi
     fi
 
-    tmp_target="$(mktemp "$BIN_DIR/.ag-setup.XXXXXX")"
-    if ! cp "$src_real" "$tmp_target" || ! chmod 755 "$tmp_target" || ! mv -f "$tmp_target" "$target"; then
-        rm -f "$tmp_target"
+    TMP_SELF_TARGET="$(mktemp "$BIN_DIR/.ag-setup.XXXXXX")"
+    if ! cp "$src_real" "$TMP_SELF_TARGET" || ! chmod 755 "$TMP_SELF_TARGET" || ! mv -f "$TMP_SELF_TARGET" "$target"; then
+        rm -f "$TMP_SELF_TARGET"
+        TMP_SELF_TARGET=""
         echo "Error: unable to install the script to '$target'." >&2
         exit 1
     fi
+    TMP_SELF_TARGET=""
 
     echo "Script successfully installed to '$target'."
     warn_if_not_in_path "ag-setup"
@@ -723,7 +839,6 @@ main() {
     local force_install=0
     local setup_desktop=1
     local install_self_mode=0
-    local local_archive=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -752,57 +867,43 @@ main() {
                 exit 1
                 ;;
             *)
-                if [ -n "$local_archive" ]; then
-                    echo "Error: only one archive file may be specified." >&2
-                    usage >&2
-                    exit 1
-                fi
-                local_archive="$1"
+                echo "Error: unexpected argument: $1" >&2
+                usage >&2
+                exit 1
                 ;;
         esac
         shift
     done
 
+    check_os
+    check_not_root
+
     if [ "$install_self_mode" -eq 1 ]; then
-        if [ "$check_only" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ] || [ "$setup_desktop" -eq 0 ] || [ -n "$local_archive" ]; then
+        if [ "$check_only" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ] || [ "$setup_desktop" -eq 0 ]; then
             echo "Error: the --install-self option must be used by itself." >&2
             exit 1
         fi
+        validate_safe_dir_var "BIN_DIR" "$BIN_DIR"
         install_self
         exit 0
     fi
 
-    if [ -n "$local_archive" ] && [ "$check_only" -eq 1 ]; then
-        echo "Error: the --check option cannot be used with a local archive." >&2
-        exit 1
+    validate_dest_dir
+    if [ "$check_only" -eq 0 ] && [ "$setup_desktop" -eq 1 ]; then
+        validate_safe_dir_var "BIN_DIR" "$BIN_DIR"
+        validate_safe_dir_var "DESKTOP_DIR" "$DESKTOP_DIR"
+        validate_safe_dir_var "ICON_DIR" "$ICON_DIR"
     fi
 
-    if [ -n "$local_archive" ]; then
-        check_dependencies "local"
-        if [ ! -f "$local_archive" ]; then
-            echo "Error: file not found: $local_archive" >&2
-            exit 1
-        fi
-        local local_ver new_ver
-        local_ver="$(get_local_version "$DEST_DIR")"
-        echo "Installed version: ${local_ver:-not installed}"
-        confirm_close_if_running
-        install_archive "$local_archive"
-        if [ "$setup_desktop" -eq 1 ]; then
-            setup_desktop_integration
-        fi
-        new_ver="$(get_local_version "$DEST_DIR")"
-        print_completion_message "$local_ver" "$new_ver" "$setup_desktop"
-        exit 0
-    fi
+    check_dependencies
 
-    check_dependencies "remote"
-
-    local platform local_ver remote_info remote_ver download_url archive_file new_ver
+    local platform local_ver tmp_base remote_info remote_ver download_url archive_file new_ver
     platform="$(detect_platform)"
     local_ver="$(get_local_version "$DEST_DIR")"
 
-    TMP_DIR="$(mktemp -d -t antigravity-update.XXXXXX)"
+    tmp_base="$(normalize_dir_path "${TMPDIR:-/tmp}")"
+    [ -z "$tmp_base" ] && tmp_base="/tmp"
+    TMP_DIR="$(mktemp -d "$tmp_base/antigravity-update.XXXXXX")"
 
     echo "Checking for the latest version of Google Antigravity ($platform)..."
     remote_info="$(fetch_remote_release "$platform")"
@@ -837,6 +938,7 @@ main() {
         exit 0
     fi
 
+    validate_existing_dest_dir
     confirm_close_if_running
 
     archive_file="$TMP_DIR/Antigravity.tar.gz"
