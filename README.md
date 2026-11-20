@@ -14,7 +14,7 @@ Il permet aussi bien d'**installer Google Antigravity depuis zéro** sur un syst
 2. Compare avec la version éventuellement installée localement (lue depuis `resources/app.asar`).
 3. Télécharge l'archive Linux adaptée à l'architecture (`linux-x64` ou `linux-arm`) via `curl` ou `wget` si Antigravity n'est pas installé ou si une nouvelle version existe.
 4. Extrait l'archive dans un répertoire temporaire et vérifie la présence du binaire `antigravity` avant de toucher à l'installation existante.
-5. Ferme proprement les processus Antigravity liés au répertoire d'installation.
+5. Demande confirmation avant de fermer proprement les processus Antigravity liés au répertoire d'installation s'il est en cours d'exécution (sauf avec `--yes`).
 6. Installe ou remplace l'application de manière atomique (avec restauration automatique en cas d'erreur).
 7. Configure l'intégration bureau :
    - extraction de l'icône officielle PNG (`512x512`) vers `~/.local/share/icons/hicolor/512x512/apps/antigravity.png` ;
@@ -41,6 +41,9 @@ Il permet aussi bien d'**installer Google Antigravity depuis zéro** sur un syst
 
 # Forcer le téléchargement et la réinstallation
 ./install-antigravity.sh --force
+
+# Installer ou mettre à jour sans demander confirmation pour fermer Antigravity
+./install-antigravity.sh --yes
 
 # Installer ou mettre à jour sans créer le raccourci bureau, l'icône ni le lien CLI
 ./install-antigravity.sh --no-desktop

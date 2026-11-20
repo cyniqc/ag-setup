@@ -18,6 +18,8 @@ DOWNLOADER="${DOWNLOADER:-auto}"
 TMP_DIR=""
 STAGE_DIR=""
 SELECTED_DOWNLOADER=""
+ASSUME_YES=0
+CLOSE_CONFIRMED=0
 
 cleanup() {
     if [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
@@ -45,6 +47,7 @@ Sans argument :
 Options :
   -c, --check         Vérifie uniquement si une mise à jour est disponible (lecture seule)
   -f, --force         Force le téléchargement et la réinstallation même si déjà à jour
+  -y, --yes           Ferme Antigravity automatiquement sans demander confirmation
       --no-desktop    Ne crée ni le lanceur .desktop, ni l'icône, ni le lien dans BIN_DIR
       --install-self  Copie ce script dans "$BIN_DIR/install-antigravity" pour l'utiliser de partout
   -h, --help          Affiche cette aide et quitte
@@ -464,23 +467,71 @@ sys.exit(0 if remote_parts > local_parts else 1)
 PY
 }
 
-close_antigravity() {
+find_antigravity_pids() {
     [ -e "$DEST_DIR" ] || return 0
 
     local real_dest
     real_dest="$(readlink -f "$DEST_DIR" 2>/dev/null || true)"
     [ -n "$real_dest" ] || return 0
 
-    local pids=()
     local exe exe_target pid
     for exe in /proc/[0-9]*/exe; do
         exe_target="$(readlink "$exe" 2>/dev/null || true)"
         if [ "$exe_target" = "$real_dest/antigravity" ] || [ "$exe_target" = "$real_dest/antigravity (deleted)" ]; then
             pid="${exe#/proc/}"
             pid="${pid%/exe}"
-            pids+=("$pid")
+            printf '%s\n' "$pid"
         fi
     done
+}
+
+confirm_close_if_running() {
+    if [ "$ASSUME_YES" -eq 1 ] || [ "$CLOSE_CONFIRMED" -eq 1 ]; then
+        return 0
+    fi
+
+    local pids=()
+    local pid
+    while IFS= read -r pid; do
+        [ -n "$pid" ] && pids+=("$pid")
+    done < <(find_antigravity_pids)
+
+    if [ "${#pids[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ ! -t 0 ]; then
+        echo "Erreur : Google Antigravity est en cours d'exécution (${#pids[@]} processus). Ferme-le d'abord ou relance avec --yes (-y)." >&2
+        exit 1
+    fi
+
+    local reply=""
+    echo "Google Antigravity est en cours d'exécution (${#pids[@]} processus)."
+    printf "Veux-tu le fermer pour poursuivre l'installation ? [o/N] "
+    if ! read -r reply; then
+        echo ""
+        echo "Opération annulée."
+        exit 0
+    fi
+
+    case "$reply" in
+        o|O|oui|OUI|Oui|y|Y|yes|YES|Yes)
+            CLOSE_CONFIRMED=1
+            return 0
+            ;;
+        *)
+            echo "Opération annulée."
+            exit 0
+            ;;
+    esac
+}
+
+close_antigravity() {
+    local pids=()
+    local pid
+    while IFS= read -r pid; do
+        [ -n "$pid" ] && pids+=("$pid")
+    done < <(find_antigravity_pids)
 
     if [ "${#pids[@]}" -eq 0 ]; then
         return 0
@@ -573,6 +624,7 @@ install_archive() {
 
     chmod 755 "$STAGE_DIR"
 
+    confirm_close_if_running
     close_antigravity
 
     backup_dir="$parent_dir/.antigravity-backup.$$"
@@ -671,6 +723,9 @@ main() {
             -f|--force)
                 force_install=1
                 ;;
+            -y|--yes)
+                ASSUME_YES=1
+                ;;
             --no-desktop)
                 setup_desktop=0
                 ;;
@@ -699,7 +754,7 @@ main() {
     done
 
     if [ "$install_self_mode" -eq 1 ]; then
-        if [ "$check_only" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$setup_desktop" -eq 0 ] || [ -n "$local_archive" ]; then
+        if [ "$check_only" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ] || [ "$setup_desktop" -eq 0 ] || [ -n "$local_archive" ]; then
             echo "Erreur : l'option --install-self doit être utilisée seule." >&2
             exit 1
         fi
@@ -721,6 +776,7 @@ main() {
         local local_ver new_ver
         local_ver="$(get_local_version "$DEST_DIR")"
         echo "Version installée : ${local_ver:-non installée}"
+        confirm_close_if_running
         install_archive "$local_archive"
         if [ "$setup_desktop" -eq 1 ]; then
             setup_desktop_integration
@@ -770,6 +826,8 @@ main() {
         fi
         exit 0
     fi
+
+    confirm_close_if_running
 
     archive_file="$TMP_DIR/Antigravity.tar.gz"
     echo "Téléchargement de Google Antigravity $remote_ver..."
