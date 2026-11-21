@@ -3,9 +3,9 @@
 [![Lint](https://github.com/cyniqc/ag-setup/actions/workflows/lint.yml/badge.svg)](https://github.com/cyniqc/ag-setup/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-An **automatic installation and update script** for **Google Antigravity (App / Hub)** on Linux (`x86_64` and `arm64`).
+A **single-file Bash script** to automatically install and update **Google Antigravity (App / Hub)** on Linux (`x86_64` and `arm64`).
 
-It can **install Google Antigravity from scratch** on a fresh system (Ubuntu, Linux Mint, etc.) and automatically **update** it afterward.
+Lightweight, easy to audit, and requiring only standard Linux tools — it can **install Google Antigravity from scratch** on a fresh system (Ubuntu, Linux Mint, etc.) and automatically **update** it afterward.
 
 ## Quick Start
 
