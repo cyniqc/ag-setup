@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-11-21
+
+### Changed
+
+- Extract `.tar.gz` archives in a single pass instead of running a separate `tar -tzf` pre-scan, promoting a single top-level directory directly from staging.
+- Scan `/proc` in Python (`os.scandir` / `os.readlink`) inside `find_antigravity_pids` to eliminate per-process `readlink` forks during detection and shutdown polling.
+- Merge duplicate `python3` invocations in `get_local_version` and `extract_app_icon` into `read_app_resource` (`json-version` and `png-file` modes).
+- Simplify Bash internals: replace `while read` loops with `mapfile -t`, replace `printf | sed` pipelines with `read`, deduplicate process count formatting, condense `detect_downloader` / `validate_dest_dir`, and rely on `trap cleanup EXIT` for error rollbacks.
+
+### Fixed
+
+- Avoid re-running desktop integration on every execution when icon extraction falls back to `Icon=applications-development`.
+
 ## [0.9.0] - 2026-11-20
 
 Initial public beta release of `ag-setup`.
@@ -22,4 +35,5 @@ Initial public beta release of `ag-setup`.
 - Safety guardrails: Linux-only check, root/`sudo` refusal, strict validation of `DEST_DIR` and XDG directory variables, and protection against overwriting non-Antigravity directories.
 - MIT `LICENSE`, public `README.md`, and GitHub Actions lint workflow (`bash -n` and `shellcheck`).
 
+[0.9.1]: https://github.com/cyniqc/ag-setup/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/cyniqc/ag-setup/releases/tag/v0.9.0
