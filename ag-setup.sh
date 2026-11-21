@@ -100,19 +100,11 @@ detect_downloader() {
                 exit 1
             fi
             ;;
-        curl)
-            if command -v curl >/dev/null 2>&1; then
-                printf 'curl\n'
+        curl|wget)
+            if command -v "$DOWNLOADER" >/dev/null 2>&1; then
+                printf '%s\n' "$DOWNLOADER"
             else
-                echo "Error: missing tool: curl" >&2
-                exit 1
-            fi
-            ;;
-        wget)
-            if command -v wget >/dev/null 2>&1; then
-                printf 'wget\n'
-            else
-                echo "Error: missing tool: wget" >&2
+                echo "Error: missing tool: $DOWNLOADER" >&2
                 exit 1
             fi
             ;;
@@ -181,7 +173,7 @@ validate_safe_dir_var() {
 validate_dest_dir() {
     validate_safe_dir_var "DEST_DIR" "$DEST_DIR"
 
-    local resolved_dest home_norm home_resolved xdg_norm xdg_resolved candidate
+    local resolved_dest home_norm home_resolved xdg_resolved candidate
     resolved_dest="$(readlink -m "$DEST_DIR")"
 
     home_norm="$(normalize_dir_path "${HOME:-}")"
@@ -190,10 +182,9 @@ validate_dest_dir() {
         home_resolved="$(readlink -m "$home_norm" 2>/dev/null || printf '%s\n' "$home_norm")"
     fi
 
-    xdg_norm="$(normalize_dir_path "$XDG_DATA_HOME")"
     xdg_resolved=""
-    if [ -n "$xdg_norm" ]; then
-        xdg_resolved="$(readlink -m "$xdg_norm" 2>/dev/null || printf '%s\n' "$xdg_norm")"
+    if [ -n "$XDG_DATA_HOME" ]; then
+        xdg_resolved="$(readlink -m "$XDG_DATA_HOME" 2>/dev/null || printf '%s\n' "$XDG_DATA_HOME")"
     fi
 
     for candidate in "$DEST_DIR" "$resolved_dest"; do
@@ -201,7 +192,7 @@ validate_dest_dir() {
             echo "Error: refusing to use HOME directory as DEST_DIR ('$DEST_DIR')." >&2
             exit 1
         fi
-        if [ -n "$xdg_norm" ] && { [ "$candidate" = "$xdg_norm" ] || [ "$candidate" = "$xdg_resolved" ]; }; then
+        if [ -n "$XDG_DATA_HOME" ] && { [ "$candidate" = "$XDG_DATA_HOME" ] || [ "$candidate" = "$xdg_resolved" ]; }; then
             echo "Error: refusing to use XDG_DATA_HOME directory as DEST_DIR ('$DEST_DIR')." >&2
             exit 1
         fi
@@ -614,9 +605,8 @@ print(download_url)
 PY
 )" || return 1
 
-    remote_ver="$(printf '%s\n' "$parsed_info" | sed -n '1p')"
-    download_url="$(printf '%s\n' "$parsed_info" | sed -n '2p')"
-    if [ -z "$remote_ver" ] || [ -z "$download_url" ]; then
+    if ! { IFS= read -r remote_ver && IFS= read -r download_url; } <<< "$parsed_info" \
+        || [ -z "$remote_ver" ] || [ -z "$download_url" ]; then
         return 1
     fi
 
@@ -717,9 +707,8 @@ print(download_url)
 PY
 )" || return 1
 
-    remote_ver="$(printf '%s\n' "$parsed_info" | sed -n '1p')"
-    download_url="$(printf '%s\n' "$parsed_info" | sed -n '2p')"
-    if [ -z "$remote_ver" ] || [ -z "$download_url" ]; then
+    if ! { IFS= read -r remote_ver && IFS= read -r download_url; } <<< "$parsed_info" \
+        || [ -z "$remote_ver" ] || [ -z "$download_url" ]; then
         return 1
     fi
 
@@ -731,16 +720,12 @@ fetch_remote_release() {
     local platform="$1"
     local json_file="$TMP_DIR/releases.json"
     local html_file="$TMP_DIR/download.html"
-    local result="" remote_ver="" download_url=""
+    local result=""
 
     if download_file "$HUB_RELEASES_API_URL" "$json_file" "quiet" 2>/dev/null; then
-        if result="$(parse_releases_json "$json_file" "$platform" 2>/dev/null)"; then
-            remote_ver="$(printf '%s\n' "$result" | sed -n '1p')"
-            download_url="$(printf '%s\n' "$result" | sed -n '2p')"
-            if [ -n "$remote_ver" ] && [ -n "$download_url" ]; then
-                printf '%s\n%s\n' "$remote_ver" "$download_url"
-                return 0
-            fi
+        if result="$(parse_releases_json "$json_file" "$platform" 2>/dev/null)" && [ -n "$result" ]; then
+            printf '%s\n' "$result"
+            return 0
         fi
     fi
 
@@ -924,33 +909,37 @@ wait_for_antigravity_exit() {
     [ -z "$remaining" ]
 }
 
+format_process_count() {
+    local count="$1"
+    if [ "$count" -eq 1 ]; then
+        printf '1 process\n'
+    else
+        printf '%s processes\n' "$count"
+    fi
+}
+
 confirm_close_if_running() {
     if [ "$ASSUME_YES" -eq 1 ] || [ "$CLOSE_CONFIRMED" -eq 1 ]; then
         return 0
     fi
 
     local pids=()
-    local pid
-    while IFS= read -r pid; do
-        [ -n "$pid" ] && pids+=("$pid")
-    done < <(find_antigravity_pids)
+    mapfile -t pids < <(find_antigravity_pids)
 
     if [ "${#pids[@]}" -eq 0 ]; then
         return 0
     fi
 
-    local proc_label="processes"
-    if [ "${#pids[@]}" -eq 1 ]; then
-        proc_label="process"
-    fi
+    local proc_count
+    proc_count="$(format_process_count "${#pids[@]}")"
 
     if [ ! -t 0 ]; then
-        echo "Error: Google Antigravity is currently running (${#pids[@]} $proc_label). Close it first or re-run with --yes (-y)." >&2
+        echo "Error: Google Antigravity is currently running ($proc_count). Close it first or re-run with --yes (-y)." >&2
         exit 1
     fi
 
     local reply=""
-    echo "Google Antigravity is currently running (${#pids[@]} $proc_label)."
+    echo "Google Antigravity is currently running ($proc_count)."
     printf "Do you want to close it to continue the installation? [y/N] "
     if ! read -r reply; then
         echo ""
@@ -974,30 +963,16 @@ close_antigravity() {
     local pids=()
     local root_pids=()
     local remaining_pids=()
-    local pid
-    while IFS= read -r pid; do
-        if [ -n "$pid" ]; then
-            pids+=("$pid")
-        fi
-    done < <(find_antigravity_pids)
+    mapfile -t pids < <(find_antigravity_pids)
 
     if [ "${#pids[@]}" -eq 0 ]; then
         return 0
     fi
 
-    local proc_label="processes"
-    if [ "${#pids[@]}" -eq 1 ]; then
-        proc_label="process"
-    fi
-
-    echo "Closing Antigravity (${#pids[@]} $proc_label)..."
+    echo "Closing Antigravity ($(format_process_count "${#pids[@]}"))..."
     trap '' HUP
 
-    while IFS= read -r pid; do
-        if [ -n "$pid" ]; then
-            root_pids+=("$pid")
-        fi
-    done < <(find_antigravity_root_pids "${pids[@]}")
+    mapfile -t root_pids < <(find_antigravity_root_pids "${pids[@]}")
 
     if [ "${#root_pids[@]}" -eq 0 ]; then
         root_pids=("${pids[@]}")
@@ -1009,11 +984,7 @@ close_antigravity() {
         return 0
     fi
 
-    while IFS= read -r pid; do
-        if [ -n "$pid" ]; then
-            remaining_pids+=("$pid")
-        fi
-    done < <(find_antigravity_pids)
+    mapfile -t remaining_pids < <(find_antigravity_pids)
 
     if [ "${#remaining_pids[@]}" -eq 0 ]; then
         return 0
@@ -1079,9 +1050,6 @@ install_archive() {
 
     if ! mv "$install_root" "$DEST_DIR"; then
         echo "Error: unable to install the new version into $DEST_DIR." >&2
-        if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ] && [ ! -e "$DEST_DIR" ]; then
-            mv "$BACKUP_DIR" "$DEST_DIR" || true
-        fi
         exit 1
     fi
     if [ "$install_root" != "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
@@ -1142,8 +1110,6 @@ install_self() {
 
     TMP_SELF_TARGET="$(mktemp "$BIN_DIR/.ag-setup.XXXXXX")"
     if ! cp "$src_real" "$TMP_SELF_TARGET" || ! chmod 755 "$TMP_SELF_TARGET" || ! mv -f "$TMP_SELF_TARGET" "$target"; then
-        rm -f "$TMP_SELF_TARGET"
-        TMP_SELF_TARGET=""
         echo "Error: unable to install the script to '$target'." >&2
         exit 1
     fi
@@ -1230,8 +1196,12 @@ main() {
 
     echo "Checking for the latest version of Google Antigravity ($platform)..."
     remote_info="$(fetch_remote_release "$platform")"
-    remote_ver="$(printf '%s\n' "$remote_info" | sed -n '1p')"
-    download_url="$(printf '%s\n' "$remote_info" | sed -n '2p')"
+    remote_ver=""
+    download_url=""
+    {
+        IFS= read -r remote_ver || true
+        IFS= read -r download_url || true
+    } <<< "$remote_info"
 
     echo "Installed version: ${local_ver:-not installed}"
     echo "Latest version:    $remote_ver"
