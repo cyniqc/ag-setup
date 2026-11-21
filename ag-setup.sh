@@ -821,19 +821,34 @@ PY
 find_antigravity_pids() {
     [ -e "$DEST_DIR" ] || return 0
 
-    local real_dest
-    real_dest="$(readlink -f "$DEST_DIR" 2>/dev/null || true)"
-    [ -n "$real_dest" ] || return 0
+    python3 - "$DEST_DIR" <<'PY'
+import os
+import sys
 
-    local exe exe_target pid
-    for exe in /proc/[0-9]*/exe; do
-        exe_target="$(readlink "$exe" 2>/dev/null || true)"
-        if [ "$exe_target" = "$real_dest/antigravity" ] || [ "$exe_target" = "$real_dest/antigravity (deleted)" ]; then
-            pid="${exe#/proc/}"
-            pid="${pid%/exe}"
-            printf '%s\n' "$pid"
-        fi
-    done
+real_dest = os.path.realpath(sys.argv[1])
+if not real_dest:
+    sys.exit(0)
+
+target = os.path.join(real_dest, "antigravity")
+deleted_target = f"{target} (deleted)"
+
+try:
+    entries = os.scandir("/proc")
+except OSError:
+    sys.exit(0)
+
+with entries:
+    for entry in entries:
+        name = entry.name
+        if not name.isdigit():
+            continue
+        try:
+            exe_target = os.readlink(f"/proc/{name}/exe")
+        except OSError:
+            continue
+        if exe_target == target or exe_target == deleted_target:
+            print(name)
+PY
 }
 
 find_antigravity_root_pids() {
@@ -1013,55 +1028,10 @@ close_antigravity() {
     echo "Warning: some Antigravity processes are still running; continuing installation." >&2
 }
 
-detect_strip_components() {
-    local archive_path="$1"
-    python3 - "$archive_path" <<'PY'
-import subprocess
-import sys
-
-archive_path = sys.argv[1]
-proc = subprocess.run(["tar", "-tzf", archive_path], capture_output=True, text=True)
-if proc.returncode != 0:
-    if proc.stderr:
-        sys.stderr.write(proc.stderr)
-    sys.exit(proc.returncode)
-
-entries = []
-for raw in proc.stdout.splitlines():
-    line = raw.rstrip("\r\n")
-    if not line:
-        continue
-    if line.startswith("/") or ".." in line.split("/"):
-        sys.stderr.write(f"Error: archive contains unsafe path: {line}\n")
-        sys.exit(1)
-    if line in (".", "./"):
-        continue
-    entries.append(line)
-
-if not entries:
-    sys.stderr.write("Error: archive is empty.\n")
-    sys.exit(1)
-
-if all(e.startswith("./") and len(e) > 2 for e in entries):
-    trimmed = [e[2:] for e in entries]
-    prefix_strip = 1
-else:
-    trimmed = entries
-    prefix_strip = 0
-
-first_components = {e.split("/", 1)[0] for e in trimmed if e}
-has_nested = any("/" in e.rstrip("/") for e in trimmed)
-
-if len(first_components) == 1 and has_nested:
-    print(prefix_strip + 1)
-else:
-    print(prefix_strip)
-PY
-}
-
 install_archive() {
     local archive_path="$1"
-    local parent_dir strip_count
+    local parent_dir install_root had_dotglob=0 had_nullglob=0
+    local entries=()
 
     validate_existing_dest_dir
 
@@ -1071,20 +1041,32 @@ install_archive() {
     STAGE_DIR="$(mktemp -d "$parent_dir/.antigravity-staging.XXXXXX")"
 
     echo "Extracting archive..."
-    strip_count="$(detect_strip_components "$archive_path")"
-    if [ "$strip_count" -gt 0 ]; then
-        tar --no-same-owner -xzf "$archive_path" -C "$STAGE_DIR" --strip-components="$strip_count"
-    else
-        tar --no-same-owner -xzf "$archive_path" -C "$STAGE_DIR"
+    tar --no-same-owner -xzf "$archive_path" -C "$STAGE_DIR"
+
+    if shopt -q dotglob; then had_dotglob=1; fi
+    if shopt -q nullglob; then had_nullglob=1; fi
+    shopt -s dotglob nullglob
+    entries=("$STAGE_DIR"/*)
+    if [ "$had_dotglob" -eq 0 ]; then shopt -u dotglob; fi
+    if [ "$had_nullglob" -eq 0 ]; then shopt -u nullglob; fi
+
+    if [ "${#entries[@]}" -eq 0 ]; then
+        echo "Error: archive is empty." >&2
+        exit 1
     fi
 
-    if [ ! -f "$STAGE_DIR/antigravity" ]; then
+    install_root="$STAGE_DIR"
+    if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ] && [ ! -L "${entries[0]}" ]; then
+        install_root="${entries[0]}"
+    fi
+
+    if [ ! -f "$install_root/antigravity" ]; then
         echo "Error: extracted archive does not contain the 'antigravity' binary." >&2
         exit 1
     fi
-    [ -x "$STAGE_DIR/antigravity" ] || chmod 755 "$STAGE_DIR/antigravity"
+    [ -x "$install_root/antigravity" ] || chmod 755 "$install_root/antigravity"
 
-    chmod 755 "$STAGE_DIR"
+    chmod 755 "$install_root"
 
     confirm_close_if_running
     close_antigravity
@@ -1095,12 +1077,15 @@ install_archive() {
         mv "$DEST_DIR" "$BACKUP_DIR"
     fi
 
-    if ! mv "$STAGE_DIR" "$DEST_DIR"; then
+    if ! mv "$install_root" "$DEST_DIR"; then
         echo "Error: unable to install the new version into $DEST_DIR." >&2
         if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ] && [ ! -e "$DEST_DIR" ]; then
             mv "$BACKUP_DIR" "$DEST_DIR" || true
         fi
         exit 1
+    fi
+    if [ "$install_root" != "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ]; then
+        rm -rf "$STAGE_DIR"
     fi
     STAGE_DIR=""
 
