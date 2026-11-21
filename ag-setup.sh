@@ -491,9 +491,9 @@ warn_if_not_in_path() {
 }
 
 desktop_integration_complete() {
-    [ -f "$DESKTOP_DIR/antigravity.desktop" ] \
-        && [ -e "$BIN_DIR/antigravity" ] \
-        && [ -f "$ICON_DIR/antigravity.png" ]
+    local desktop_file="$DESKTOP_DIR/antigravity.desktop"
+    [ -f "$desktop_file" ] && [ -e "$BIN_DIR/antigravity" ] || return 1
+    [ -f "$ICON_DIR/antigravity.png" ] || grep -qxF "Icon=applications-development" "$desktop_file"
 }
 
 validate_download_url() {
