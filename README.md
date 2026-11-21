@@ -112,6 +112,7 @@ This is an **unofficial community tool** and is not affiliated with, endorsed by
 
 - It does not redistribute Google binaries; archives are downloaded directly from Google's official distribution endpoints and remain subject to Google's terms.
 - Version detection relies on Google's official release feed and download page structure, which may change without notice.
+- Developed with AI assistance, reviewed, and tested on Linux. As a single-file script, you are encouraged to inspect `ag-setup.sh` before running it.
 
 ## Changelog
 
