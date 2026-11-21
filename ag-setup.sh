@@ -298,10 +298,11 @@ detect_platform() {
 read_app_resource() {
     local install_dir="$1"
     local resource_name="$2"
-    local output_path="${3:-}"
+    local mode="${3:-raw}"
+    local output_path="${4:-}"
     [ -d "$install_dir" ] || return 1
 
-    python3 - "$install_dir" "$resource_name" "$output_path" <<'PY'
+    python3 - "$install_dir" "$resource_name" "$mode" "$output_path" <<'PY'
 import json
 import os
 import struct
@@ -309,10 +310,12 @@ import sys
 
 MAX_HEADER_BYTES = 50 * 1024 * 1024
 MAX_RESOURCE_BYTES = 20 * 1024 * 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 install_dir = sys.argv[1]
 resource_name = sys.argv[2]
-output_path = sys.argv[3] if len(sys.argv) > 3 else ""
+mode = sys.argv[3] if len(sys.argv) > 3 else "raw"
+output_path = sys.argv[4] if len(sys.argv) > 4 else ""
 
 asar_path = os.path.join(install_dir, "resources", "app.asar")
 unpacked_path = os.path.join(install_dir, "resources", "app.asar.unpacked", resource_name)
@@ -354,14 +357,23 @@ try:
     if data is None:
         sys.exit(1)
 
-    if output_path:
-        parent = os.path.dirname(output_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(output_path, "wb") as out:
-            out.write(data)
+    if mode == "json-version":
+        pkg = json.loads(data.decode("utf-8"))
+        ver = pkg.get("version", "") if isinstance(pkg, dict) else ""
+        if not isinstance(ver, str) or not ver:
+            sys.exit(1)
+        print(ver)
     else:
-        sys.stdout.buffer.write(data)
+        if mode == "png-file" and (not output_path or not data.startswith(PNG_MAGIC)):
+            sys.exit(1)
+        if output_path:
+            parent = os.path.dirname(output_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(output_path, "wb") as out:
+                out.write(data)
+        else:
+            sys.stdout.buffer.write(data)
 except Exception:
     sys.exit(1)
 PY
@@ -371,24 +383,7 @@ get_local_version() {
     local dir="${1:-$DEST_DIR}"
     [ -d "$dir" ] || return 0
 
-    local pkg_json=""
-    if ! pkg_json="$(read_app_resource "$dir" "package.json" 2>/dev/null)"; then
-        return 0
-    fi
-    [ -n "$pkg_json" ] || return 0
-
-    python3 -c '
-import json
-import sys
-
-try:
-    pkg = json.loads(sys.stdin.read())
-    ver = pkg.get("version", "")
-    if isinstance(ver, str) and ver:
-        print(ver)
-except Exception:
-    pass
-' <<< "$pkg_json"
+    read_app_resource "$dir" "package.json" "json-version" 2>/dev/null || true
 }
 
 extract_app_icon() {
@@ -401,23 +396,7 @@ extract_app_icon() {
     mkdir -p "$parent_dir"
     tmp_icon="$(mktemp "$parent_dir/.antigravity-icon.XXXXXX")"
 
-    if ! read_app_resource "$install_dir" "icon.png" "$tmp_icon" 2>/dev/null; then
-        rm -f "$tmp_icon"
-        return 1
-    fi
-
-    if ! python3 - "$tmp_icon" <<'PY'
-import sys
-
-png_magic = b"\x89PNG\r\n\x1a\n"
-try:
-    with open(sys.argv[1], "rb") as f:
-        header = f.read(8)
-    sys.exit(0 if header == png_magic else 1)
-except Exception:
-    sys.exit(1)
-PY
-    then
+    if ! read_app_resource "$install_dir" "icon.png" "png-file" "$tmp_icon" 2>/dev/null; then
         rm -f "$tmp_icon"
         return 1
     fi
