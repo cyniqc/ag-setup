@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-25
+
+### Added
+
+- Add `--changelog` read-only option to fetch and display full release notes (newest first) from `https://antigravity.google/docs/changelog` for all pending updates between the installed version and the latest release (or for the current/latest version when already up to date or not yet installed), with a graceful fallback link if notes are unavailable or not yet published.
+
+### Changed
+
+- Show a hint (`Run 'ag-setup --changelog' to see what changed.`) in `--check` output when a newer version is available, leaving the up-to-date output unchanged.
+
 ## [0.9.1] - 2026-11-21
 
 ### Changed
@@ -35,5 +45,6 @@ Initial public beta release of `ag-setup`.
 - Safety guardrails: Linux-only check, root/`sudo` refusal, strict validation of `DEST_DIR` and XDG directory variables, and protection against overwriting non-Antigravity directories.
 - MIT `LICENSE`, public `README.md`, and GitHub Actions lint workflow (`bash -n` and `shellcheck`).
 
+[0.10.0]: https://github.com/cyniqc/ag-setup/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/cyniqc/ag-setup/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/cyniqc/ag-setup/releases/tag/v0.9.0

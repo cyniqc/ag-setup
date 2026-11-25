@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.9.1"
+VERSION="0.10.0"
 DOWNLOAD_PAGE_URL="https://antigravity.google/download"
 CHANGELOG_URL="https://antigravity.google/docs/changelog"
 HUB_RELEASES_API_URL="https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases"
