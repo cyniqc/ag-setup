@@ -3,6 +3,7 @@ set -euo pipefail
 
 VERSION="0.9.1"
 DOWNLOAD_PAGE_URL="https://antigravity.google/download"
+CHANGELOG_URL="https://antigravity.google/docs/changelog"
 HUB_RELEASES_API_URL="https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases"
 HUB_DOWNLOAD_BASE_URL="https://storage.googleapis.com/antigravity-public/antigravity-hub"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -72,6 +73,7 @@ With no arguments:
 
 Options:
   -c, --check         Only check if an update is available (read-only)
+      --changelog     Show release notes for pending updates, or latest version if up to date (read-only)
   -f, --force         Force download and reinstallation even if already up to date
   -y, --yes           Close Antigravity automatically without asking for confirmation
       --no-desktop    Do not create the .desktop launcher, icon, or BIN_DIR symlink
@@ -782,6 +784,357 @@ sys.exit(0 if remote_pre > local_pre else 1)
 PY
 }
 
+parse_and_print_changelog() {
+    local html_file="$1"
+    local local_ver="$2"
+    local remote_ver="$3"
+    local changelog_url="$4"
+
+    python3 - "$html_file" "$local_ver" "$remote_ver" "$changelog_url" <<'PY'
+from functools import cmp_to_key
+from html.parser import HTMLParser
+import re
+import sys
+
+html_path = sys.argv[1]
+local_ver = sys.argv[2]
+remote_ver = sys.argv[3]
+changelog_url = sys.argv[4]
+
+VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img",
+    "input", "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+def parse_semver(ver):
+    if not ver:
+        return None
+    s = ver.strip().lstrip("vV")
+    s = s.split("+", 1)[0]
+    if "-" in s:
+        core_str, pre_str = s.split("-", 1)
+    else:
+        core_str, pre_str = s, None
+
+    core_nums = [int(x) for x in re.findall(r'\d+', core_str)]
+    if not core_nums:
+        return None
+
+    if pre_str == "" or pre_str is None:
+        pre = None
+    else:
+        pre = []
+        for part in pre_str.split("."):
+            tokens = re.findall(r'\d+|[A-Za-z]+', part)
+            segs = [
+                (0, int(tok)) if tok.isdigit() else (1, tok.lower())
+                for tok in tokens
+            ]
+            pre.append(segs)
+
+    return core_nums, pre
+
+
+def cmp_semver(ver_a, ver_b):
+    parsed_a = parse_semver(ver_a)
+    parsed_b = parse_semver(ver_b)
+    if parsed_a is None or parsed_b is None:
+        return None
+
+    core_a, pre_a = parsed_a
+    core_b, pre_b = parsed_b
+
+    max_len = max(len(core_a), len(core_b))
+    core_a = core_a + [0] * (max_len - len(core_a))
+    core_b = core_b + [0] * (max_len - len(core_b))
+
+    if core_a != core_b:
+        return 1 if core_a > core_b else -1
+
+    if pre_a is None and pre_b is None:
+        return 0
+    if pre_a is not None and pre_b is None:
+        return -1
+    if pre_a is None and pre_b is not None:
+        return 1
+
+    if pre_a == pre_b:
+        return 0
+    return 1 if pre_a > pre_b else -1
+
+
+def clean_text(chunks):
+    return re.sub(r"\s+", " ", "".join(chunks)).strip()
+
+
+class HubChangelogParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.releases = []
+        self._cur = None
+        self._article_depth = 0
+        self._date_tag = None
+        self._date_depth = 0
+        self._date_chunks = []
+        self._headline_tag = None
+        self._headline_depth = 0
+        self._headline_chunks = []
+        self._summary_tag = None
+        self._summary_depth = 0
+        self._summary_chunks = []
+        self._details_depth = 0
+        self._cur_cat_title = ""
+        self._cur_cat_items = []
+        self._cat_summary_depth = 0
+        self._cat_summary_chunks = []
+        self._li_depth = 0
+        self._li_chunks = []
+
+    def handle_starttag(self, tag, attrs):
+        attr_map = dict(attrs)
+        classes = set((attr_map.get("class") or "").split())
+
+        if self._cur is None:
+            if tag == "article":
+                elem_id = attr_map.get("id", "")
+                if elem_id.startswith("rel-hub-"):
+                    ver = elem_id[len("rel-hub-"):].strip()
+                    if ver:
+                        self._cur = {
+                            "version": ver,
+                            "date": "",
+                            "headline": "",
+                            "summary": "",
+                            "categories": [],
+                        }
+                        self._article_depth = 1
+            return
+
+        if tag not in VOID_TAGS and tag == "article":
+            self._article_depth += 1
+
+        if tag in VOID_TAGS:
+            if tag == "br":
+                if self._summary_depth > 0:
+                    self._summary_chunks.append(" ")
+                if self._li_depth > 0:
+                    self._li_chunks.append(" ")
+            return
+
+        if self._date_depth > 0:
+            if tag == self._date_tag:
+                self._date_depth += 1
+        elif not self._cur["date"] and tag == "time" and (
+            "rn-date-text" in classes or self._details_depth == 0
+        ):
+            self._date_tag = tag
+            self._date_depth = 1
+            self._date_chunks = []
+
+        if self._headline_depth > 0:
+            if tag == self._headline_tag:
+                self._headline_depth += 1
+        elif not self._cur["headline"] and "rn-headline" in classes:
+            self._headline_tag = tag
+            self._headline_depth = 1
+            self._headline_chunks = []
+
+        if self._summary_depth > 0:
+            if tag == self._summary_tag:
+                self._summary_depth += 1
+        elif not self._cur["summary"] and "rn-summary" in classes:
+            self._summary_tag = tag
+            self._summary_depth = 1
+            self._summary_chunks = []
+
+        if self._details_depth > 0:
+            if tag == "details":
+                self._details_depth += 1
+            if self._cat_summary_depth > 0:
+                if tag == "summary":
+                    self._cat_summary_depth += 1
+            elif tag == "summary" and not self._cur_cat_title and self._li_depth == 0:
+                self._cat_summary_depth = 1
+                self._cat_summary_chunks = []
+            if self._li_depth > 0:
+                if tag == "li":
+                    self._li_depth += 1
+            elif tag == "li":
+                self._li_depth = 1
+                self._li_chunks = []
+        elif tag == "details":
+            self._details_depth = 1
+            self._cur_cat_title = (attr_map.get("data-item-title") or "").strip()
+            self._cur_cat_items = []
+
+    def handle_data(self, data):
+        if self._cur is None:
+            return
+        if self._date_depth > 0:
+            self._date_chunks.append(data)
+        if self._headline_depth > 0:
+            self._headline_chunks.append(data)
+        if self._summary_depth > 0:
+            self._summary_chunks.append(data)
+        if self._cat_summary_depth > 0:
+            self._cat_summary_chunks.append(data)
+        if self._li_depth > 0:
+            self._li_chunks.append(data)
+
+    def handle_endtag(self, tag):
+        if self._cur is None or tag in VOID_TAGS:
+            return
+
+        if self._date_depth > 0 and tag == self._date_tag:
+            self._date_depth -= 1
+            if self._date_depth == 0:
+                self._cur["date"] = clean_text(self._date_chunks)
+                self._date_tag = None
+
+        if self._headline_depth > 0 and tag == self._headline_tag:
+            self._headline_depth -= 1
+            if self._headline_depth == 0:
+                self._cur["headline"] = clean_text(self._headline_chunks)
+                self._headline_tag = None
+
+        if self._summary_depth > 0 and tag == self._summary_tag:
+            self._summary_depth -= 1
+            if self._summary_depth == 0:
+                self._cur["summary"] = clean_text(self._summary_chunks)
+                self._summary_tag = None
+
+        if self._details_depth > 0:
+            if self._cat_summary_depth > 0 and tag == "summary":
+                self._cat_summary_depth -= 1
+                if self._cat_summary_depth == 0 and not self._cur_cat_title:
+                    raw_title = clean_text(self._cat_summary_chunks)
+                    self._cur_cat_title = re.sub(r"\s*\(\d+\)\s*$", "", raw_title).strip()
+
+            if self._li_depth > 0 and tag == "li":
+                self._li_depth -= 1
+                if self._li_depth == 0:
+                    item_text = clean_text(self._li_chunks)
+                    if item_text:
+                        self._cur_cat_items.append(item_text)
+
+            if tag == "details":
+                self._details_depth -= 1
+                if self._details_depth == 0:
+                    if self._cur_cat_items:
+                        title = self._cur_cat_title or "Changes"
+                        self._cur["categories"].append((title, self._cur_cat_items))
+                    self._cur_cat_title = ""
+                    self._cur_cat_items = []
+                    self._cat_summary_depth = 0
+                    self._li_depth = 0
+
+        if tag == "article":
+            self._article_depth -= 1
+            if self._article_depth == 0:
+                self.releases.append(self._cur)
+                self._cur = None
+                self._date_depth = 0
+                self._headline_depth = 0
+                self._summary_depth = 0
+                self._details_depth = 0
+
+
+with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+    html_text = f.read()
+
+parser = HubChangelogParser()
+parser.feed(html_text)
+parser.close()
+
+valid_releases = [r for r in parser.releases if parse_semver(r["version"]) is not None]
+if not valid_releases:
+    sys.exit(1)
+
+valid_releases.sort(key=cmp_to_key(lambda a, b: cmp_semver(a["version"], b["version"])), reverse=True)
+
+
+def print_release(rel):
+    header_line = f"v{rel['version']}"
+    if rel["date"]:
+        header_line += f" ({rel['date']})"
+    print("")
+    print("=" * 72)
+    print(header_line)
+    if rel["headline"]:
+        print(rel["headline"])
+    print("=" * 72)
+    if rel["summary"]:
+        print(rel["summary"])
+    for title, items in rel["categories"]:
+        print("")
+        print(f"{title} ({len(items)}):")
+        for item in items:
+            print(f"  - {item}")
+
+
+cmp_local_remote = cmp_semver(local_ver, remote_ver) if local_ver else None
+anchor_ver = remote_ver
+
+if local_ver and cmp_local_remote is not None and cmp_local_remote < 0:
+    selected = [
+        r for r in valid_releases
+        if cmp_semver(local_ver, r["version"]) < 0
+        and cmp_semver(r["version"], remote_ver) <= 0
+    ]
+    print("")
+    if not selected:
+        print(f"No release notes published yet for v{remote_ver}.")
+        print(f"Full changelog: {changelog_url}#rel-hub-{remote_ver}")
+        sys.exit(0)
+    if not any(cmp_semver(r["version"], remote_ver) == 0 for r in selected):
+        print(f"Note: release notes for v{remote_ver} are not published yet.")
+    unit = "version" if len(selected) == 1 else "versions"
+    print(f"Changes since v{local_ver} ({len(selected)} {unit}):")
+elif not local_ver:
+    selected = [r for r in valid_releases if cmp_semver(r["version"], remote_ver) == 0]
+    if not selected:
+        print("")
+        print(f"No release notes published yet for v{remote_ver}.")
+        print(f"Full changelog: {changelog_url}#rel-hub-{remote_ver}")
+        sys.exit(0)
+else:
+    selected = [r for r in valid_releases if cmp_semver(r["version"], local_ver) == 0]
+    if selected:
+        anchor_ver = local_ver
+    else:
+        selected = [r for r in valid_releases if cmp_semver(r["version"], remote_ver) == 0]
+    if not selected:
+        print("")
+        print(f"No release notes found for v{local_ver}.")
+        print(f"Full changelog: {changelog_url}#rel-hub-{remote_ver}")
+        sys.exit(0)
+
+for rel in selected:
+    print_release(rel)
+
+print("")
+print(f"Full changelog: {changelog_url}#rel-hub-{anchor_ver}")
+PY
+}
+
+show_release_changelog() {
+    local local_ver="$1"
+    local remote_ver="$2"
+    local changelog_file="$TMP_DIR/changelog.html"
+    local anchor_ver="$remote_ver"
+
+    if [ -n "$local_ver" ] && ! is_newer_version "$local_ver" "$remote_ver"; then
+        anchor_ver="$local_ver"
+    fi
+
+    if ! download_file "$CHANGELOG_URL" "$changelog_file" "quiet" 2>/dev/null \
+        || ! parse_and_print_changelog "$changelog_file" "$local_ver" "$remote_ver" "$CHANGELOG_URL"; then
+        echo "Warning: unable to retrieve release notes from $CHANGELOG_URL." >&2
+        echo "Full changelog: ${CHANGELOG_URL}#rel-hub-${anchor_ver}"
+    fi
+}
+
 find_antigravity_pids() {
     [ -e "$DEST_DIR" ] || return 0
 
@@ -1100,6 +1453,7 @@ install_self() {
 
 main() {
     local check_only=0
+    local show_changelog=0
     local force_install=0
     local setup_desktop=1
     local install_self_mode=0
@@ -1108,6 +1462,9 @@ main() {
         case "$1" in
             -c|--check)
                 check_only=1
+                ;;
+            --changelog)
+                show_changelog=1
                 ;;
             -f|--force)
                 force_install=1
@@ -1147,7 +1504,7 @@ main() {
     check_not_root
 
     if [ "$install_self_mode" -eq 1 ]; then
-        if [ "$check_only" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ] || [ "$setup_desktop" -eq 0 ]; then
+        if [ "$check_only" -eq 1 ] || [ "$show_changelog" -eq 1 ] || [ "$force_install" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ] || [ "$setup_desktop" -eq 0 ]; then
             echo "Error: the --install-self option must be used by itself." >&2
             exit 1
         fi
@@ -1157,7 +1514,7 @@ main() {
     fi
 
     validate_dest_dir
-    if [ "$check_only" -eq 0 ] && [ "$setup_desktop" -eq 1 ]; then
+    if [ "$check_only" -eq 0 ] && [ "$show_changelog" -eq 0 ] && [ "$setup_desktop" -eq 1 ]; then
         validate_safe_dir_var "BIN_DIR" "$BIN_DIR"
         validate_safe_dir_var "DESKTOP_DIR" "$DESKTOP_DIR"
         validate_safe_dir_var "ICON_DIR" "$ICON_DIR"
@@ -1185,7 +1542,7 @@ main() {
     echo "Installed version: ${local_ver:-not installed}"
     echo "Latest version:    $remote_ver"
 
-    if [ "$check_only" -eq 1 ]; then
+    if [ "$check_only" -eq 1 ] || [ "$show_changelog" -eq 1 ]; then
         if is_newer_version "$local_ver" "$remote_ver"; then
             if [ -z "$local_ver" ]; then
                 echo "Google Antigravity is not installed yet. Available version: $remote_ver"
@@ -1193,8 +1550,14 @@ main() {
                 echo "A new version is available: $remote_ver"
             fi
             echo "Link: $download_url"
+            if [ "$show_changelog" -eq 0 ]; then
+                echo "Run 'ag-setup --changelog' to see what changed."
+            fi
         else
             echo "Google Antigravity is already up to date ($local_ver)."
+        fi
+        if [ "$show_changelog" -eq 1 ]; then
+            show_release_changelog "$local_ver" "$remote_ver"
         fi
         exit 0
     fi

@@ -60,6 +60,9 @@ ag-setup
 # Exits 0 whether an update is available or already up to date, and non-zero on error
 ag-setup --check
 
+# Show full release notes for all pending updates (or the current version if up to date)
+ag-setup --changelog
+
 # Force download and reinstallation even if already up to date
 ag-setup --force
 
